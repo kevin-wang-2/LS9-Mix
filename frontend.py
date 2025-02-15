@@ -87,10 +87,70 @@ class LS9MixTableView(QTableView):
 
         self.doubleClicked.connect(self.handle_double_click)
         mix.register_event_callback(self.ls9_message_callback)
+
+        self.clipboard_mode = 0 # 0: Nothing, 1: Copy Whole Cue, 2: Copy DCA
     
+    def keyPressEvent(self, e):
+        # ctrl
+        if e.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if e.key() == Qt.Key.Key_D:
+                self.parent().duplicate_button.click()
+            elif e.key() == Qt.Key.Key_C:
+                # if no selection do nothing
+                if len(self.selectedIndexes()) == 0:
+                    return
+
+                # if selected the first or second column, copy the whole cue
+                if self.selectedIndexes()[0].column() == 0 or self.selectedIndexes()[0].column() == 1:
+                    self.clipboard_mode = 1
+                    self.clipboard = self.selectedIndexes()[0].row()
+                else:
+                    self.clipboard_mode = 2
+                    assignment = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]].copy()
+                    effects = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).effects[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]].copy()
+                    dca_name = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca_name[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]]
+
+                    self.clipboard = (assignment, effects, dca_name)
+            elif e.key() == Qt.Key.Key_V:
+                if self.clipboard_mode == 0:
+                    return
+                if self.clipboard_mode == 1:
+                    if self.selectedIndexes() == []:
+                        self.mix.cues.copy_cue(self.clipboard)
+                    else:
+                        self.mix.cues.copy_cue_to(self.clipboard, self.selectedIndexes()[0].row())
+                    self.model.beginInsertRows(QModelIndex(), len(self.model.mix.cues), len(self.model.mix.cues))
+                    self.model.endInsertRows()
+                    self.update()
+                else:
+                    # If selected on first two columns, do nothing
+                    if self.selectedIndexes()[0].column() == 0 or self.selectedIndexes()[0].column() == 1:
+                        return
+                    # Remove the inputs in this DCA from all the DCAs on the current CUE
+                    assingment = self.clipboard[0].copy()
+                    effects = self.clipboard[1].copy()
+                    dca_name = self.clipboard[2]
+
+                    for input in assingment:
+                        for dca in ls9.controlled_dca:
+                            if input in self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[dca]:
+                                self.mix.cues.remove_input_from_dca(self.selectedIndexes()[0].row(), dca, input)
+                                if len(self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[dca]) == 0:
+                                    self.mix.cues.set_effects_of_dca(self.selectedIndexes()[0].row(), dca, [])
+
+                    # Paste on current DCA
+                    self.mix.cues.set_input_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], assingment)
+                    self.mix.cues.set_effects_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], effects)
+                    self.mix.cues.change_dca_name(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], dca_name)
+
+                    # If it's current cue and console connected, go cue
+                    if self.mix.current_cue == self.selectedIndexes()[0].row() and self.mix.connected:
+                        self.mix.go_cue(self.selectedIndexes()[0].row())
+                    self.update()
+                
+
     def ls9_message_callback(self, cue_num):
         self.update()
-
     
     def handle_double_click(self, index):
         if self.mode == 0:
@@ -137,8 +197,25 @@ class LS9MixTableView(QTableView):
                 dialog = DCAEditDialog(self, cue_num, dca)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     assignment = sorted(dialog.assignment)
+
+                    for i in assignment:
+                        for other_assignment in self.mix.cues.get_cue(cue_num).dca:
+                            if i in self.mix.cues.get_cue(cue_num).dca[other_assignment] and other_assignment != ls9.controlled_dca[dca]:
+                                self.mix.cues.remove_input_from_dca(cue_num, other_assignment, i)
+                                if len(self.mix.cues.get_cue(cue_num).dca[other_assignment]) == 0:
+                                    self.mix.cues.set_effects_of_dca(cue_num, other_assignment, [])
+
                     self.mix.cues.set_input_of_dca(cue_num, ls9.controlled_dca[dca], assignment)
                     self.mix.cues.change_dca_name(cue_num, ls9.controlled_dca[dca], dialog.name.text())
+                    effects = []
+                    for effect in dialog.fx_select:
+                        if dialog.fx_select[effect].isChecked():
+                            effects.append(effect)
+                    self.mix.cues.set_effects_of_dca(cue_num, ls9.controlled_dca[dca], effects)
+                    if self.mix.current_cue == cue_num and self.mix.connected:
+                        self.mix.go_cue(cue_num)
+                    self.update()
+                self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
 
 class MidiSetupDialog(QDialog):
@@ -208,11 +285,22 @@ class DCAEditDialog(QDialog):
             item = QListWidgetItem(parent.model.mix.input_alias[i])
             item.setData(Qt.ItemDataRole.UserRole, i)
             self.assigned_list.addItem(item)
+
+        # If they are in any other DCAs in the CUE, set the color to grey and italic
+        for i in range(self.unassigned_list.count()):
+            for d in ls9.controlled_dca:
+                if self.unassigned_list.item(i).data(Qt.ItemDataRole.UserRole) in parent.model.mix.cues.get_cue(index).dca[d]:
+                    self.unassigned_list.item(i).setForeground(QColor("#C0C0C0"))
+                    self.unassigned_list.item(i).setFont(QFont("Arial", italic=True))
+                    break
         
         def move_in():
             selected_items = self.unassigned_list.selectedItems()
             for item in selected_items:
                 self.unassigned_list.takeItem(self.unassigned_list.row(item))
+
+                item.setForeground(QColor("#FFFFFF"))
+                item.setFont(QFont("Arial", italic=False))
 
                 # Search the position to insert
                 for i in range(self.assigned_list.count()):
@@ -230,6 +318,11 @@ class DCAEditDialog(QDialog):
         def move_out():
             selected_items = self.assigned_list.selectedItems()
             for item in selected_items:
+                for d in ls9.controlled_dca:
+                    if item.data(Qt.ItemDataRole.UserRole) in parent.model.mix.cues.get_cue(index).dca[d]:
+                        item.setForeground(QColor("#C0C0C0"))
+                        item.setFont(QFont("Arial", italic=True))
+                        break
                 self.assigned_list.takeItem(self.assigned_list.row(item))
                 
                 # Search the position to insert
@@ -259,6 +352,19 @@ class DCAEditDialog(QDialog):
 
         self.layout.addLayout(self.dca_layout)
 
+        # Add FX Select for each FX at the bottom
+        self.effect_select_layout = QHBoxLayout()
+        self.fx_select = {}
+        for effect in parent.mix.effect_ports:
+            checkbox = QCheckBox()
+            self.fx_select[effect] = checkbox
+            self.effect_select_layout.addWidget(QLabel("Effect" + str(effect)))
+            self.effect_select_layout.addWidget(checkbox)
+            if effect in parent.model.mix.cues.get_cue(index).effects[ls9.controlled_dca[dca]]:
+                checkbox.setChecked(True)
+            
+        self.layout.addLayout(self.effect_select_layout)
+
         # Add OK button
         self.ok_button = QPushButton("OK")
         self.ok_button.clicked.connect(self.accept)
@@ -266,6 +372,7 @@ class DCAEditDialog(QDialog):
 
         # Bind Enter key to OK button
         self.ok_button.setDefault(True)
+
 
 class SetupWidget(QWidget):
     def __init__(self):
@@ -345,16 +452,32 @@ class SetupWidget(QWidget):
 
 
 class Ls9MixWidget(QWidget):
-    def __init__(self, server):
+    def __init__(self, server, file = None):
         super().__init__()
+
+        self.current_file = file
+
         # Save Button
         self.save_button = QPushButton("Save")
         def save():
-            file_name, _ = QFileDialog.getSaveFileName(self, "Save Mix", "", "LS9 Mix Files (*.ls9mix)",)
+            if self.current_file is None:
+                file_name, _ = QFileDialog.getSaveFileName(self, "Save Mix", "", "LS9 Mix Files (*.ls9mix)",)
+            else:
+                file_name = self.current_file
             if file_name == "":
                 return
             self.mix.save(file_name)
         self.save_button.clicked.connect(save)
+
+        # Save As Button
+        self.save_as_button = QPushButton("Save As")
+        def save_as():
+            file_name, _ = QFileDialog.getSaveFileName(self, "Save Mix", "", "LS9 Mix Files (*.ls9mix)",)
+            if file_name == "":
+                return
+            self.mix.save(file_name)
+            self.current_file = file_name
+        self.save_as_button.clicked.connect(save_as)
 
         # Load Button
         self.load_button = QPushButton("Load")
@@ -366,6 +489,8 @@ class Ls9MixWidget(QWidget):
             self.view.model.beginResetModel()
             self.view.model.endResetModel()
             self.view.update()
+
+            self.current_file = file_name
         self.load_button.clicked.connect(load)
 
         
@@ -381,6 +506,8 @@ class Ls9MixWidget(QWidget):
                 self.mix.cues.add_cue()
             else:
                 self.mix.cues.add_cue_at(self.view.selectedIndexes()[0].row())
+                if self.view.clipboard_mode == 1 and self.view.clipboard > self.view.selectedIndexes()[0].row():
+                    self.view.clipboard += 1
                 self.view.selectRow(self.view.selectedIndexes()[0].row() + 1)
             self.view.model.endInsertRows()
             self.view.update()
@@ -394,6 +521,8 @@ class Ls9MixWidget(QWidget):
                 self.mix.cues.duplicate_cue(len(self.view.model.mix.cues) - 1)
             else:
                 self.mix.cues.duplicate_cue(self.view.selectedIndexes()[0].row())
+                if self.view.clipboard_mode == 1 and self.view.clipboard > self.view.selectedIndexes()[0].row():
+                    self.view.clipboard += 1
                 self.view.selectRow(self.view.selectedIndexes()[0].row() + 1)
             self.view.model.endInsertRows()
             self.view.update()
@@ -405,6 +534,8 @@ class Ls9MixWidget(QWidget):
             if len(self.view.selectedIndexes()) == 0:
                 return
             selected_row = self.view.selectedIndexes()[0].row()
+            if self.view.clipboard_mode == 1 and self.view.clipboard == selected_row:
+                self.view.clipboard_mode = 0
             self.mix.cues.remove_cue(selected_row)
             self.view.model.beginRemoveRows(QModelIndex(), self.view.selectedIndexes()[0].row(), self.view.selectedIndexes()[0].row())
             self.view.model.endRemoveRows()
@@ -423,6 +554,7 @@ class Ls9MixWidget(QWidget):
 
         self.control_layout = QHBoxLayout()
         self.control_layout.addWidget(self.save_button)
+        self.control_layout.addWidget(self.save_as_button)
         self.control_layout.addWidget(self.load_button)
         # A Vertical Spacer
         self.control_layout.addStretch()
@@ -446,6 +578,30 @@ class Ls9MixWidget(QWidget):
         self.mix = self.server.mix
         self.view = LS9MixTableView(self.mix)
         self.layout.addWidget(self.view)
+
+
+    def keyPressEvent(self, event):
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            if event.key() == Qt.Key.Key_S:
+                self.ctrl_s()
+            elif event.key() == Qt.Key.Key_O:
+                self.ctrl_o()
+            elif event.key() == Qt.Key.Key_D:
+                self.duplicate_button.click()
+            elif event.key() == Qt.Key.Key_C or event.key() == Qt.Key.Key_V:
+                self.view.keyPressEvent(event)
+        elif event.modifiers() == Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier:
+            if event.key() == Qt.Key.Key_S:
+                self.ctrl_shift_s()
+
+    def ctrl_s(self):
+        self.save_button.click()
+    
+    def ctrl_shift_s(self):
+        self.save_as_button.click()
+    
+    def ctrl_o(self):
+        self.load_button.click()
     
     def mode_button_clicked(self):
         if not self.server.enabled:
@@ -461,18 +617,29 @@ class Ls9MixWidget(QWidget):
 
 
 class MainWidget(QWidget):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent=parent)
+        self.main_window = False
+
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
         self.setWindowTitle("LS9 Mix Server")
         self.setup_widget = SetupWidget()
         self.layout.addWidget(self.setup_widget)
         self.setup_widget.ok_button.clicked.connect(self.setup_finished)
+
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def keyPressEvent(self, event):
+        if self.main_window:
+            self.ls9_mix_widget.keyPressEvent(event)
     
     def setup_finished(self):
+        self.main_window = True
+
         self.ls9_mix_widget = Ls9MixWidget(self.setup_widget.server)
         self.layout.addWidget(self.ls9_mix_widget)
+        print(self.ls9_mix_widget.parent())
         self.setup_widget.hide()
         self.setup_widget.deleteLater()
 

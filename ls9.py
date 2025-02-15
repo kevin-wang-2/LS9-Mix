@@ -39,7 +39,7 @@ class Mix_cue:
         effects = {}
         for effect in self.effects:
             effects[effect] = self.effects[effect].copy()
-        return Mix_cue(self.number, self.name, dcas, effects)
+        return Mix_cue(self.number, self.name, dcas, effects, self.dca_name.copy())
 
 class Mix_cue_sheet:
     def get_new_cue_number(self):
@@ -106,6 +106,27 @@ class Mix_cue_sheet:
         new_cue = self.cues[index].copy()
         new_cue.number = self.get_new_cue_number()
         self.cues.append(self.cues[index].copy())
+        return True
+    
+    def copy_cue_to(self, index, target_index):
+        if index < 0 or index >= len(self.cues):
+            return False
+        if target_index < 0 or target_index >= len(self.cues):
+            return False
+        new_cue = self.cues[index].copy()
+
+        if target_index == len(self.cues) - 1:
+            new_cue.number = self.get_new_cue_number()
+        else:
+            prev_num = float(self.cues[target_index].number)
+            next_num = float(self.cues[target_index + 1].number)
+            if int(prev_num) + 1 < next_num:
+                new_num = str(int(prev_num) + 1)
+            else:
+                new_num = str((prev_num + next_num) / 2)
+            new_cue.number = new_num
+
+        self.cues.insert(target_index + 1, new_cue)
         return True
     
     def remove_cue(self, index):
@@ -197,6 +218,14 @@ class Mix_cue_sheet:
             self.cues[index].effects[dca].remove(effect)
             return True
         return False
+    
+    def set_effects_of_dca(self, index, dca, effects):
+        if index < 0 or index >= len(self.cues):
+            return False
+        if dca not in self.controlled_dca:
+            return False
+        self.cues[index].effects[dca] = effects
+        return True
     
     def get_cue(self, index):
         if index < 0 or index >= len(self.cues):
@@ -349,6 +378,7 @@ class LS9_mix:
             for input in last_assignment:
                 if input not in current_assignment:
                     self.NRPN.send_input_to_mix_off(input, dca)
+            self.dca[dca] = current_assignment.copy()
             for input in current_assignment:
                 channel_on[input] = 1
             for effect in self.effects[dca]:
