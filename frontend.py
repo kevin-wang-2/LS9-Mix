@@ -3,6 +3,7 @@
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
+import qdarktheme
 
 headers = ["Cue Number", "Cue Name", "DCA1", "DCA2", "DCA3", "DCA4", "DCA5", "DCA6", "DCA7", "DCA8"]
 
@@ -54,7 +55,7 @@ class LS9MixTableModel(QAbstractTableModel):
                 elif self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]] != "":
                     return self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]]
                 elif len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 1:
-                    return self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]][0]
+                    return self.mix.input_alias[self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]][0]]
                 else:
                     return "Group"
         return QVariant()
@@ -63,6 +64,7 @@ class LS9MixTableModel(QAbstractTableModel):
         if role != Qt.ItemDataRole.DisplayRole or orientation != Qt.Orientation.Horizontal:
             return QVariant()
         return headers[section]
+
 
 class LS9MixTableView(QTableView):
     def __init__(self, mix):
@@ -130,13 +132,20 @@ class LS9MixTableView(QTableView):
                 
                 edit.editingFinished.connect(edit_finish)
                 self.setIndexWidget(index, edit)
+            else:
+                dca = column - 2
+                dialog = DCAEditDialog(self, cue_num, dca)
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    assignment = sorted(dialog.assignment)
+                    self.mix.cues.set_input_of_dca(cue_num, ls9.controlled_dca[dca], assignment)
+                    self.mix.cues.change_dca_name(cue_num, ls9.controlled_dca[dca], dialog.name.text())
 
 
-
-class MidiSetupWidget(QWidget):
+class MidiSetupDialog(QDialog):
     def __init__(self, server):
         super().__init__()
         self.server = server
+        self.setWindowTitle("Connect to LS9")
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
         midi_input = QComboBox()
@@ -160,28 +169,191 @@ class MidiSetupWidget(QWidget):
     
     def midi_output_changed(self, index):
         self.server.set_midi_out_port(index)
-    
-    def mode_button_clicked(self):
-        if self.view.mode == 0:
-            self.view.mode = 1
-            self.mode_button.setText("Edit Mode")
-        else:
-            self.view.mode = 0
-            self.mode_button.setText("Show Mode")
 
     def start(self):
         self.server.start()
-        for idx in range(self.layout.count()):
-            self.layout.itemAt(idx).widget().hide()
-            self.layout.itemAt(idx).widget().deleteLater()
+        self.accept()
 
+
+class DCAEditDialog(QDialog):
+    def __init__(self, parent: LS9MixTableView, index, dca):
+        super().__init__(parent=parent)
+        self.setWindowTitle("Edit DCA")
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+
+        self.name = QLineEdit()
+        self.name.setText(parent.model.mix.cues.get_cue(index).dca_name[ls9.controlled_dca[dca]])
+        self.layout.addWidget(QLabel("CUE Name"))
+        self.layout.addWidget(self.name)
+
+        # Double List with Move In (<<) and Move Ou (>>) Buttons, Left is unassigned inputs, right is assigned inputs
+        self.dca_layout = QHBoxLayout()
+        self.buttons = QVBoxLayout()
+        self.unassigned_list = QListWidget()
+        self.assigned_list = QListWidget()
+        self.move_out = QPushButton("<< Unassign")
+        self.move_in = QPushButton(">> Assign")
+
+        self.assignment = parent.model.mix.cues.get_cue(index).dca[ls9.controlled_dca[dca]].copy()
+        # Add unsassigned 
+        for i in parent.model.mix.controlled_inputs:
+            if i not in self.assignment:
+                item = QListWidgetItem(parent.model.mix.input_alias[i])
+                item.setData(Qt.ItemDataRole.UserRole, i)
+                self.unassigned_list.addItem(item)
+        
+        # Add assigned
+        for i in self.assignment:
+            item = QListWidgetItem(parent.model.mix.input_alias[i])
+            item.setData(Qt.ItemDataRole.UserRole, i)
+            self.assigned_list.addItem(item)
+        
+        def move_in():
+            selected_items = self.unassigned_list.selectedItems()
+            for item in selected_items:
+                self.unassigned_list.takeItem(self.unassigned_list.row(item))
+
+                # Search the position to insert
+                for i in range(self.assigned_list.count()):
+                    if item.data(Qt.ItemDataRole.UserRole) < self.assigned_list.item(i).data(Qt.ItemDataRole.UserRole):
+                        self.assigned_list.insertItem(i, item)
+                        break
+                else:
+                    self.assigned_list.addItem(item)
+                self.assigned_list.update()
+
+                # Add the input to the assignment
+                self.assignment.append(item.data(Qt.ItemDataRole.UserRole))
+
+        
+        def move_out():
+            selected_items = self.assigned_list.selectedItems()
+            for item in selected_items:
+                self.assigned_list.takeItem(self.assigned_list.row(item))
+                
+                # Search the position to insert
+                for i in range(self.unassigned_list.count()):
+                    if item.data(Qt.ItemDataRole.UserRole) < self.unassigned_list.item(i).data(Qt.ItemDataRole.UserRole):
+                        self.unassigned_list.insertItem(i, item)
+                        break
+                else:
+                    self.unassigned_list.addItem(item)
+                self.unassigned_list.update()
+
+                # Remove the input from the assignment
+                self.assignment.remove(item.data(Qt.ItemDataRole.UserRole))
+        
+        self.move_in.clicked.connect(move_in)
+        self.move_out.clicked.connect(move_out)
+
+        # Bind double click
+        self.unassigned_list.doubleClicked.connect(move_in)
+        self.assigned_list.doubleClicked.connect(move_out)
+
+        self.buttons.addWidget(self.move_in)
+        self.buttons.addWidget(self.move_out)
+        self.dca_layout.addWidget(self.unassigned_list)
+        self.dca_layout.addLayout(self.buttons)
+        self.dca_layout.addWidget(self.assigned_list)
+
+        self.layout.addLayout(self.dca_layout)
+
+        # Add OK button
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.layout.addWidget(self.ok_button)
+
+        # Bind Enter key to OK button
+        self.ok_button.setDefault(True)
+
+class SetupWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.server = None
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+        self.setWindowTitle("LS9 Mix Server Setup")
+
+        # A Table of 64 Inputs, could select controlled inputs using checkbox and set aias using text field
+        self.input_table = QTableWidget(64, 3)
+        self.input_table.setHorizontalHeaderLabels(["Input", "Channel", "Alias"])
+
+        self.input_table.verticalHeader().setVisible(False)
+        self.input_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        
+
+        # Reduce the width of first two columns
+        self.input_table.setColumnWidth(0, 20)
+        self.input_table.setColumnWidth(1, 20)
+
+        self.layout.addWidget(self.input_table)
+        for i in range(64):
+            # Checkbox
+            checkbox = QCheckBox()
+            self.input_table.setCellWidget(i, 0, checkbox)
+
+            if i < 16:
+                checkbox.setChecked(True)
+
+            # Input Number
+            self.input_table.setItem(i, 1, QTableWidgetItem(str(i + 1)))
+
+            # Alias
+            alias = QLineEdit()
+            alias.setText("Mic " + str(i + 1))
+            self.input_table.setCellWidget(i, 2, alias)
+        
+        # Select Effects from 8 Matrixes using Checkbox
+        self.effects = QHBoxLayout()
+        self.effectcheckboxes = []
+        for i in range(8):
+            checkbox = QCheckBox()
+            self.effects.addWidget(QLabel("Effect" + str(i + 1)))
+            self.effects.addWidget(checkbox)
+            self.effectcheckboxes.append(checkbox)
+
+            if i == 6 or i == 7:
+                checkbox.setChecked(True)
+        self.layout.addLayout(self.effects)
+
+        # Add OK button
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.setup_finished)
+        self.layout.addWidget(self.ok_button)
+    
+    def setup_finished(self):
+        controlled_inputs = []
+        for i in range(64):
+            if self.input_table.cellWidget(i, 0).isChecked():
+                controlled_inputs.append(i + 1)
+
+        controlled_dca = range(1, 9)
+
+        effect_ports = []
+        for i in range(8):
+            if self.effectcheckboxes[i].isChecked():
+                effect_ports.append(i + 1)
+        
+        input_alias = {}
+        for i in range(64):
+            alias = self.input_table.cellWidget(i, 2).text()
+            if self.input_table.cellWidget(i, 0).isChecked():
+                input_alias[i + 1] = alias
+
+        self.server = ls9.LS9_mix_server(controlled_inputs, controlled_dca, effect_ports, input_alias)
+
+
+class Ls9MixWidget(QWidget):
+    def __init__(self, server):
+        super().__init__()
         # Save Button
         self.save_button = QPushButton("Save")
         def save():
             file_name, _ = QFileDialog.getSaveFileName(self, "Save Mix", "", "LS9 Mix Files (*.ls9mix)",)
             if file_name == "":
                 return
-            self.server.save(file_name)
+            self.mix.save(file_name)
         self.save_button.clicked.connect(save)
 
         # Load Button
@@ -190,7 +362,7 @@ class MidiSetupWidget(QWidget):
             file_name, _ = QFileDialog.getOpenFileName(self, "Open Mix", "", "LS9 Mix Files (*.ls9mix)",)
             if file_name == "":
                 return
-            self.server.load(file_name)
+            self.mix.load(file_name)
             self.view.model.beginResetModel()
             self.view.model.endResetModel()
             self.view.update()
@@ -198,7 +370,7 @@ class MidiSetupWidget(QWidget):
 
         
         # Show Mode Button
-        self.mode_button = QPushButton("Edit Mode")
+        self.mode_button = QPushButton("Current Mode: Edit Mode")
         self.mode_button.clicked.connect(self.mode_button_clicked)
 
         # Add CUE button
@@ -240,6 +412,15 @@ class MidiSetupWidget(QWidget):
             self.view.selectRow(selected_row)
         self.delete_button.clicked.connect(delete_cue)
 
+        # Connect Console Button
+        self.connect_button = QPushButton("Connect Console")
+        def connect_console():
+            # Open a dialog of midi setup widget
+            midi_setup_dialog = MidiSetupDialog(self.server)
+            if midi_setup_dialog.exec() == QDialog.DialogCode.Accepted:
+                self.connect_button.setText("Connected, Reconnect to Another Port")
+        self.connect_button.clicked.connect(connect_console)
+
         self.control_layout = QHBoxLayout()
         self.control_layout.addWidget(self.save_button)
         self.control_layout.addWidget(self.load_button)
@@ -250,17 +431,54 @@ class MidiSetupWidget(QWidget):
         self.control_layout.addWidget(self.cue_button)
         self.control_layout.addWidget(self.duplicate_button)
         self.control_layout.addWidget(self.delete_button)
+        self.control_layout.addStretch()
+        self.control_layout.addWidget(self.connect_button)
         
 
         self.control_widget = QWidget()
         self.control_widget.setLayout(self.control_layout)
+
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
         self.layout.addWidget(self.control_widget)
 
+        self.server = server
         self.mix = self.server.mix
         self.view = LS9MixTableView(self.mix)
         self.layout.addWidget(self.view)
+    
+    def mode_button_clicked(self):
+        if not self.server.enabled:
+            self.view.mode = 1
+            self.mode_button.setText("Current Mode: Edit Mode")
+            return
+        if self.view.mode == 0:
+            self.view.mode = 1
+            self.mode_button.setText("Current Mode: Edit Mode")
+        else:
+            self.view.mode = 0
+            self.mode_button.setText("Current Mode: Show Mode")
 
-        self.setStyleSheet("background-color: #000000; color: #FFFFFF;")
+
+class MainWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+        self.setWindowTitle("LS9 Mix Server")
+        self.setup_widget = SetupWidget()
+        self.layout.addWidget(self.setup_widget)
+        self.setup_widget.ok_button.clicked.connect(self.setup_finished)
+    
+    def setup_finished(self):
+        self.ls9_mix_widget = Ls9MixWidget(self.setup_widget.server)
+        self.layout.addWidget(self.ls9_mix_widget)
+        self.setup_widget.hide()
+        self.setup_widget.deleteLater()
+
+        # Enable Dark Mode
+        qdarktheme.setup_theme()
+
         self.showMaximized()
 
 
@@ -270,10 +488,9 @@ if __name__ == '__main__':
     import ls9
 
     app = QApplication([])
+    QApplication.setStyle("macos")
 
-    server = ls9.LS9_mix_server()
-
-    midi_setup = MidiSetupWidget(server)
-    midi_setup.show()
+    main_widget = MainWidget()
+    main_widget.show()
     
     sys.exit(app.exec())

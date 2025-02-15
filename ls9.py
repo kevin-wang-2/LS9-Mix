@@ -13,17 +13,24 @@ effect_ports = (7, 8)
 button_next_cue = 1
 button_prev_cue = 2
 
+input_alias = {33: 'Mic 1', 34: 'Mic 2', 35: 'Mic 3', 36: 'Mic 4', 37: 'Mic 5', 38: 'Mic 6', 39: 'Mic 7', 40: 'Mic 8', 41: 'Mic 9', 42: 'Mic 10', 43: 'Mic 11', 44: 'Mic 12', 45: 'Mic 13', 46: 'Mic 14', 47: 'Mic 15', 48: 'Mic16'}
+
 mutex = Lock()
 
 class Mix_cue:
-    def __init__(self, number, name, dca, effects):
+    def __init__(self, number, name, dca, effects, dca_name = {}):
         self.number = number
         self.name = name
         self.dca = dca
-        self.dca_name = {}
-        for dca in self.dca:
-            self.dca_name[dca] = ""
+        self.dca_name = dca_name
+        if dca_name == {}:
+            for dca in self.dca:
+                self.dca_name[dca] = ""
         self.effects = effects
+    
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data['number'], data['name'], data['dca'], data['effects'], data['dca_name'])
     
     def copy(self):
         dcas = {}
@@ -133,6 +140,14 @@ class Mix_cue_sheet:
             self.cues[index].dca[dca].remove(input)
             return True
         return False
+
+    def set_input_of_dca(self, index, dca, inputs):
+        if index < 0 or index >= len(self.cues):
+            return False
+        if dca not in self.controlled_dca:
+            return False
+        self.cues[index].dca[dca] = inputs
+        return True
     
     def change_dca_name(self, index, dca, name):
         if index < 0 or index >= len(self.cues):
@@ -198,27 +213,30 @@ class Mix_cue_sheet:
                 'number': cue.number,
                 'name': cue.name,
                 'dca': cue.dca,
-                'effects': cue.effects
+                'effects': cue.effects,
+                'dca_name': cue.dca_name
             })
         return data
     
     def load_array(self, data):
         self.cues = []
         for cue in data:
-            if 'name' in cue:
-                self.cues.append(Mix_cue(cue['number'], cue['name'], cue['dca'], cue['effects']))
-            else:
-                self.cues.append(Mix_cue(cue['number'], '', cue['dca'], cue['effects']))
+            if 'name' not in cue:
+                cue['name'] = ''
+            if 'dca_name' not in cue:
+                cue['dca_name'] = {}
+            self.cues.append(Mix_cue.from_dict(cue))
     
     @classmethod
     def from_array(cls, controlled_inputs, controlled_dca, effect_ports, data):
         cue_sheet = cls(controlled_inputs, controlled_dca, effect_ports)
         cue_sheet.cues = []
         for cue in data:
-            if 'name' in cue:
-                cue_sheet.cues.append(Mix_cue(cue['number'], cue['name'], cue['dca'], cue['effects']))
-            else:
-                cue_sheet.cues.append(Mix_cue(cue['number'], '', cue['dca'], cue['effects']))
+            if 'name' not in cue:
+                cue['name'] = ''
+            if 'dca_name' not in cue:
+                cue['dca_name'] = {}
+            cue_sheet.cues.append(Mix_cue.from_dict(cue))
         return cue_sheet
 
 class LS9_NRPN_Sender:
@@ -283,10 +301,14 @@ class LS9_NRPN_Sender:
         self.midi_out.send_message((self.head, 0x06, 0x00))
 
 class LS9_mix:
-    def __init__(self, NRPN, controlled_inputs, controlled_dca, cues):
+    def __init__(self, NRPN, controlled_inputs, controlled_dca, effect_ports, input_alias, cues):
         self.NRPN = NRPN
         self.controlled_inputs = controlled_inputs
         self.controlled_dca = controlled_dca
+        self.effect_ports = effect_ports
+        self.input_alias = input_alias
+
+        self.connected = False
         
         self.cues = cues
         self.current_cue = 0 # 0 is line-check
@@ -300,7 +322,7 @@ class LS9_mix:
             self.NRPN.send_input_off(input)
         
         for dca in self.controlled_dca:
-            for effect in effect_ports:
+            for effect in self.effect_ports:
                 self.NRPN.send_output_to_matrix_off(dca, effect)
         
         self.channel_on = {}
@@ -344,6 +366,8 @@ class LS9_mix:
         self.channel_on = channel_on
 
     def go_cue(self, target_cue_idx):
+        if not self.connected:
+            return
         mutex.acquire()
         self.current_cue = target_cue_idx
         self._go_cue(target_cue_idx)
@@ -352,6 +376,8 @@ class LS9_mix:
             callback(self.current_cue)
     
     def next_cue(self):
+        if not self.connected:
+            return
         mutex.acquire()
         self.current_cue += 1
         if self.current_cue >= len(self.cues):
@@ -362,6 +388,8 @@ class LS9_mix:
             callback(self.current_cue)
     
     def previous_cue(self):
+        if not self.connected:
+            return
         mutex.acquire()
         self.current_cue -= 1
         if self.current_cue < 0:
@@ -374,11 +402,182 @@ class LS9_mix:
     def register_event_callback(self, callback):
         self.event_callbacks.append(callback)
 
-    def reload(self, controlled_inputs, controlled_dca, cues):
+    def save(self, filename):
+        mutex.acquire()
+        data = self.cues.to_array()
+        mutex.release()
+
+        binary_data = b''
+
+        # 1. Save the amount of controlled inputs
+        binary_data += len(self.controlled_inputs).to_bytes(1, 'big')
+
+        # 2. Save the controlled inputs
+        for input in self.controlled_inputs:
+            binary_data += input.to_bytes(1, 'big')
+        
+        # 3. Save the amount of controlled dca
+        binary_data += len(self.controlled_dca).to_bytes(1, 'big')
+
+        # 4. Save the controlled dca
+        for dca in self.controlled_dca:
+            binary_data += dca.to_bytes(1, 'big')
+
+        # 5. Save the amount of effect ports
+        binary_data += len(self.effect_ports).to_bytes(1, 'big')
+        for effect in self.effect_ports:
+            binary_data += effect.to_bytes(1, 'big')
+
+        # 6. Save input alias
+        binary_data += len(self.input_alias).to_bytes(1, 'big')
+        for input in self.input_alias:
+            binary_data += input.to_bytes(2, 'big')
+            binary_data += len(self.input_alias[input]).to_bytes(1, 'big')
+            binary_data += self.input_alias[input].encode('utf-8')
+        
+        # 7. Save the cue data
+
+        # 7.1. Save the amount of cues
+        binary_data += len(data).to_bytes(4, 'big')
+
+        for cue in data:
+            # 7.2 save the length of the cue number and the cue number
+            cue['number'] = str(cue['number'])
+            binary_data += len(cue['number']).to_bytes(2, 'big')
+            binary_data += cue['number'].encode('utf-8')
+
+            # 7.3 save the length of the cue name and the cue name
+            binary_data += len(cue['name']).to_bytes(2, 'big')
+            binary_data += cue['name'].encode('utf-8')
+
+            # 7.4 Save each controlled dca
+            for dca in self.controlled_dca:
+                binary_data += len(cue['dca'][dca]).to_bytes(1, 'big')
+                for input in cue['dca'][dca]:
+                    binary_data += input.to_bytes(1, 'big')
+            
+            # 7.5 Save each effect port
+            for dca in self.controlled_dca:
+                binary_data += len(cue['effects'][dca]).to_bytes(1, 'big')
+                for effect in cue['effects'][dca]:
+                    binary_data += effect.to_bytes(1, 'big')
+
+            # 7.6 Save the dca names
+            for dca in self.controlled_dca:
+                binary_data += len(cue['dca_name'][dca]).to_bytes(2, 'big')
+                binary_data += cue['dca_name'][dca].encode('utf-8')
+            
+        with open(filename, 'wb') as file:
+            file.write(binary_data)
+    
+    def load(self, filename):
+        with open(filename, 'rb') as file:
+            binary_data = file.read()
+        
+        offset = 0
+
+        # 1. Load the amount of controlled inputs
+        controlled_inputs = []
+        controlled_inputs_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+        offset += 1
+
+        # 2. Load the controlled inputs
+        for i in range(controlled_inputs_len):
+            controlled_inputs.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
+            offset += 1
+        
+        # 3. Load the amount of controlled dca
+        controlled_dca = []
+        controlled_dca_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+        offset += 1
+
+        # 4. Load the controlled dca
+        for i in range(controlled_dca_len):
+            controlled_dca.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
+            offset += 1
+        
+        # 5. Load the amount of effect ports
+        effect_ports = []
+        effect_ports_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+        offset += 1
+
+        # 6. Load the effect ports
+        for i in range(effect_ports_len):
+            effect_ports.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
+            offset += 1
+        
+        # 7. Load input alias
+        input_alias = {}
+        input_alias_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+        offset += 1
+
+        for i in range(input_alias_len):
+            input = int.from_bytes(binary_data[offset:offset + 2], 'big')
+            offset += 2
+            alias_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+            offset += 1
+            alias = binary_data[offset:offset + alias_len].decode('utf-8')
+            offset += alias_len
+            input_alias[input] = alias
+        
+        # 8. Load the cue data
+        cues = []
+        cue_len = int.from_bytes(binary_data[offset:offset + 4], 'big')
+        offset += 4
+        for i in range(cue_len):
+            cue = {}
+            # 8.1 Load the cue number
+            cue_number_len = int.from_bytes(binary_data[offset:offset + 2], 'big')
+            offset += 2
+            cue['number'] = binary_data[offset:offset + cue_number_len].decode('utf-8')
+            offset += cue_number_len
+
+            # 8.2 Load the cue name
+            cue_name_len = int.from_bytes(binary_data[offset:offset + 2], 'big')
+            offset += 2
+            cue['name'] = binary_data[offset:offset + cue_name_len].decode('utf-8')
+            offset += cue_name_len
+
+            # 8.3 Load the dca assignments
+            cue['dca'] = {}
+            for dca in controlled_dca:
+                cue['dca'][dca] = []
+                dca_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+                offset += 1
+                for j in range(dca_len):
+                    cue['dca'][dca].append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
+                    offset += 1
+            
+            # 8.4 Load the effect assignments
+            cue['effects'] = {}
+            for dca in controlled_dca:
+                cue['effects'][dca] = []
+                effect_len = int.from_bytes(binary_data[offset:offset + 1], 'big')
+                offset += 1
+                for j in range(effect_len):
+                    cue['effects'][dca].append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
+                    offset += 1
+            
+            # 8.5 Load the dca names
+            cue['dca_name'] = {}
+            for dca in controlled_dca:
+                dca_name_len = int.from_bytes(binary_data[offset:offset + 2], 'big')
+                offset += 2
+                cue['dca_name'][dca] = binary_data[offset:offset + dca_name_len].decode('utf-8')
+                offset += dca_name_len
+            
+            cues.append(cue)
+        
+        mutex.acquire()
         self.controlled_inputs = controlled_inputs
         self.controlled_dca = controlled_dca
-        self.cues = cues
+        self.effect_ports = effect_ports
+        self.input_alias = input_alias
+        self.cues = Mix_cue_sheet.from_array(controlled_inputs, controlled_dca, effect_ports, cues)
         self.current_cue = 0 # 0 is line-check
+        mutex.release()
+        if self.connected:
+            self.send_initialize()
 
 class OSC_server():
     def __init__(self, port):
@@ -439,161 +638,15 @@ def generate_nrpn_parser(ls9_mix):
     return parse_nrpn_input
 
 class LS9_mix_server():
-    def __init__(self):
+    def __init__(self, controlled_inputs = controlled_inputs, controlled_dca = controlled_dca, effect_ports = effect_ports, input_alias = input_alias):
         self.midi_in = rtmidi.MidiIn()
         self.midi_out = rtmidi.MidiOut()
         self.ls9 = LS9_NRPN_Sender(self.midi_out, 0)
-        self.mix = LS9_mix(self.ls9, controlled_inputs, controlled_dca, Mix_cue_sheet.from_array(controlled_inputs, controlled_dca, effect_ports, [
-            {'number': '0', 'name': 'Line Check', 'dca': {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-            {'number': '1', 'dca': {1: [33, 34], 2: [35, 36], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [], 2: [7], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-            {'number': '1.5', 'dca': {1: [33, 34, 35, 36], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [], 2: [7], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-            {'number': '2', 'dca': {1: [33], 2: [35], 3: [], 4: [], 5: [], 6: [], 7: [], 8: [41, 42, 43, 44, 45, 46, 47, 48]}, 'effects': {1: [7], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-            {'number': '3', 'dca': {1: [33], 2: [35], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-            {'number': '4', 'dca': {1: [38], 2: [47, 41], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [8], 2: [7], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}},
-        ]))   
+        self.mix = LS9_mix(self.ls9, controlled_inputs, controlled_dca, effect_ports, input_alias, Mix_cue_sheet.from_array(controlled_inputs, controlled_dca, effect_ports, [
+            {'number': '0', 'name': 'Line Check', 'dca': {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, 'effects': {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}}
+            ]))   
         self.osc_server = OSC_server(53001)
         self.enabled = False
-    
-    def save(self, filename):
-        mutex.acquire()
-        data = self.mix.cues.to_array()
-        mutex.release()
-
-        binary_data = b''
-
-        # 1. Save the amount of controlled inputs
-        binary_data += len(controlled_inputs).to_bytes(1, 'big')
-
-        # 2. Save the controlled inputs
-        for input in controlled_inputs:
-            binary_data += input.to_bytes(1, 'big')
-        
-        # 3. Save the amount of controlled dca
-        binary_data += len(controlled_dca).to_bytes(1, 'big')
-
-        # 4. Save the controlled dca
-        for dca in controlled_dca:
-            binary_data += dca.to_bytes(1, 'big')
-
-        # 5. Save the amount of effect ports
-        binary_data += len(effect_ports).to_bytes(1, 'big')
-        for effect in effect_ports:
-            binary_data += effect.to_bytes(1, 'big')
-        
-        # 6. Save the cue data
-
-        # 6.1. Save the amount of cues
-        binary_data += len(data).to_bytes(4, 'big')
-
-        for cue in data:
-            print("Dumped CUE ", cue['number'])
-            # 6.2 save the length of the cue number and the cue number
-            cue['number'] = str(cue['number'])
-            binary_data += len(cue['number']).to_bytes(1, 'big')
-            binary_data += cue['number'].encode('utf-8')
-
-            # 6.3 save the length of the cue name and the cue name
-            binary_data += len(cue['name']).to_bytes(1, 'big')
-            binary_data += cue['name'].encode('utf-8')
-
-            # 6.4 Save each controlled dca
-            for dca in controlled_dca:
-                binary_data += len(cue['dca'][dca]).to_bytes(1, 'big')
-                for input in cue['dca'][dca]:
-                    binary_data += input.to_bytes(1, 'big')
-            
-            # 6.5 Save each effect port
-            for dca in controlled_dca:
-                binary_data += len(cue['effects'][dca]).to_bytes(1, 'big')
-                for effect in cue['effects'][dca]:
-                    binary_data += effect.to_bytes(1, 'big')
-            
-        with open(filename, 'wb') as file:
-            file.write(binary_data)
-    
-    def load(self, filename):
-        with open(filename, 'rb') as file:
-            binary_data = file.read()
-        
-        offset = 0
-
-        # 1. Load the amount of controlled inputs
-        controlled_input_count = int.from_bytes(binary_data[offset:offset + 1], 'big')
-        offset += 1
-
-        # 2. Load the controlled inputs
-        controlled_inputs = []
-        for i in range(controlled_input_count):
-            controlled_inputs.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
-            offset += 1
-        
-        # 3. Load the amount of controlled dca
-        controlled_dca_count = int.from_bytes(binary_data[offset:offset + 1], 'big')
-        offset += 1
-
-        # 4. Load the controlled dca
-        controlled_dca = []
-        for i in range(controlled_dca_count):
-            controlled_dca.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
-            offset += 1
-
-        # 5. Load the amount of effect ports
-        effect_port_count = int.from_bytes(binary_data[offset:offset + 1], 'big')
-        offset += 1
-
-        # 6. Load the effect ports
-        effect_ports = []
-        for i in range(effect_port_count):
-            effect_ports.append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
-            offset += 1
-        
-        # 7. Load the cue data
-
-        # 7.1 Load the amount of cues
-        cue_count = int.from_bytes(binary_data[offset:offset + 4], 'big')
-        offset += 4
-
-        cues = []
-        for i in range(cue_count):
-            # 7.2 Load the length of the cue number and the cue number
-            cue_number_length = int.from_bytes(binary_data[offset:offset + 1], 'big')
-            offset += 1
-            cue_number = binary_data[offset:offset + cue_number_length].decode('utf-8')
-            offset += cue_number_length
-
-            # 7.3 Load the length of the cue name and the cue name
-            cue_name_length = int.from_bytes(binary_data[offset:offset + 1], 'big')
-            offset += 1
-            cue_name = binary_data[offset:offset + cue_name_length].decode('utf-8')
-            offset += cue_name_length
-
-            # 7.4 Load each controlled dca
-            dca = {}
-            for dca_idx in controlled_dca:
-                dca[dca_idx] = []
-                dca_count = int.from_bytes(binary_data[offset:offset + 1], 'big')
-                offset += 1
-                for i in range(dca_count):
-                    dca[dca_idx].append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
-                    offset += 1
-
-            # 7.5 Load each effect port
-            effects = {}
-            for dca_idx in controlled_dca:
-                effects[dca_idx] = []
-                effect_count = int.from_bytes(binary_data[offset:offset + 1], 'big')
-                offset += 1
-                for i in range(effect_count):
-                    effects[dca_idx].append(int.from_bytes(binary_data[offset:offset + 1], 'big'))
-                    offset += 1
-            
-            cues.append({'number': cue_number, 'name': cue_name, 'dca': dca, 'effects': effects})
-            print("Loaded CUE ", cue_number)
-        
-        mutex.acquire()
-        self.mix.reload(controlled_inputs, controlled_dca, Mix_cue_sheet.from_array(controlled_inputs, controlled_dca, effect_ports, cues))
-        mutex.release()
-        self.mix.send_initialize()
 
     def get_midi_in_ports(self):
         return self.midi_in.get_ports()
@@ -608,6 +661,9 @@ class LS9_mix_server():
         self.midi_out.open_port(idx)
 
     def start(self):
+        self.enabled = True     
+        self.mix.connected = True     
+
         self.mix.send_initialize()
 
         self.midi_in.set_callback(generate_callback_function(generate_nrpn_parser(self.mix)))
@@ -629,9 +685,7 @@ class LS9_mix_server():
                     cue = int(data[4:])
                     self.mix.go_cue(cue)
 
-        Thread(target=socket_poll, daemon=True).start()
-
-        self.enabled = True                                                                                         
+        Thread(target=socket_poll, daemon=True).start()                                                                               
 
 
 if __name__ == "__main__":
