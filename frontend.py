@@ -7,6 +7,21 @@ import qdarktheme
 
 headers = ["Cue Number", "Cue Name", "DCA1", "DCA2", "DCA3", "DCA4", "DCA5", "DCA6", "DCA7", "DCA8"]
 
+global_modify = True
+
+app = QApplication([])
+QApplication.setStyle("macos")
+
+def set_global_modify(value):
+    global global_modify
+    global_modify = value
+    
+    if value:
+        app.activeWindow().setWindowTitle("LS9 Mix Server*")
+    else:
+        app.activeWindow().setWindowTitle("LS9 Mix Server")
+
+
 class LS9MixTableModel(QAbstractTableModel):
     def __init__(self, mix):
         super().__init__()
@@ -112,6 +127,7 @@ class LS9MixTableView(QTableView):
 
                     self.clipboard = (assignment, effects, dca_name)
             elif e.key() == Qt.Key.Key_V:
+                set_global_modify(True)
                 if self.clipboard_mode == 0:
                     return
                 if self.clipboard_mode == 1:
@@ -164,6 +180,7 @@ class LS9MixTableView(QTableView):
                 return
             if column == 0:
                 # Replace the cell with a textbox to edit the cue number
+                set_global_modify(True)
                 edit = QLineEdit()
                 edit.setText(str(self.model.mix.cues.get_cue(cue_num).number))
 
@@ -182,6 +199,7 @@ class LS9MixTableView(QTableView):
                 edit.editingFinished.connect(edit_finish)
                 self.setIndexWidget(index, edit)
             elif column == 1:
+                set_global_modify(True)
                 edit = QLineEdit()
                 edit.setText(self.model.mix.cues.get_cue(cue_num).name)
 
@@ -193,6 +211,7 @@ class LS9MixTableView(QTableView):
                 edit.editingFinished.connect(edit_finish)
                 self.setIndexWidget(index, edit)
             else:
+                set_global_modify(True)
                 dca = column - 2
                 dialog = DCAEditDialog(self, cue_num, dca)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
@@ -467,6 +486,8 @@ class Ls9MixWidget(QWidget):
             if file_name == "":
                 return
             self.mix.save(file_name)
+            self.current_file = file_name
+            set_global_modify(False)
         self.save_button.clicked.connect(save)
 
         # Save As Button
@@ -477,11 +498,18 @@ class Ls9MixWidget(QWidget):
                 return
             self.mix.save(file_name)
             self.current_file = file_name
+            set_global_modify(False)
         self.save_as_button.clicked.connect(save_as)
 
         # Load Button
         self.load_button = QPushButton("Load")
         def load():
+            if global_modify:
+                reply = QMessageBox.question(main_widget, "Save Changes", "Do you want to save the changes?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+                if reply == QMessageBox.StandardButton.Save:
+                    self.save_button.click()
+                elif reply == QMessageBox.StandardButton.Cancel:
+                    return
             file_name, _ = QFileDialog.getOpenFileName(self, "Open Mix", "", "LS9 Mix Files (*.ls9mix)",)
             if file_name == "":
                 return
@@ -490,6 +518,7 @@ class Ls9MixWidget(QWidget):
             self.view.model.endResetModel()
             self.view.update()
 
+            set_global_modify(False)
             self.current_file = file_name
         self.load_button.clicked.connect(load)
 
@@ -501,6 +530,7 @@ class Ls9MixWidget(QWidget):
         # Add CUE button
         self.cue_button = QPushButton("Add CUE")
         def add_cue():
+            set_global_modify(True)
             self.view.model.beginInsertRows(QModelIndex(), len(self.view.model.mix.cues), len(self.view.model.mix.cues))
             if self.view.selectedIndexes() == []:
                 self.mix.cues.add_cue()
@@ -516,6 +546,7 @@ class Ls9MixWidget(QWidget):
         # Duplicate CUE button
         self.duplicate_button = QPushButton("Duplicate CUE")
         def duplicate_cue():
+            set_global_modify(True)
             self.view.model.beginInsertRows(QModelIndex(), len(self.view.model.mix.cues), len(self.view.model.mix.cues))
             if self.view.selectedIndexes() == []:
                 self.mix.cues.duplicate_cue(len(self.view.model.mix.cues) - 1)
@@ -531,6 +562,7 @@ class Ls9MixWidget(QWidget):
         # Delete CUE button
         self.delete_button = QPushButton("Delete CUE")
         def delete_cue():
+            set_global_modify(True)
             if len(self.view.selectedIndexes()) == 0:
                 return
             selected_row = self.view.selectedIndexes()[0].row()
@@ -615,7 +647,6 @@ class Ls9MixWidget(QWidget):
             self.view.mode = 0
             self.mode_button.setText("Current Mode: Show Mode")
 
-
 class MainWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -623,7 +654,7 @@ class MainWidget(QWidget):
 
         self.layout = QVBoxLayout()
         self.setLayout(self.layout)
-        self.setWindowTitle("LS9 Mix Server")
+        self.setWindowTitle("LS9 Mix Server*")
         self.setup_widget = SetupWidget()
         self.layout.addWidget(self.setup_widget)
         self.setup_widget.ok_button.clicked.connect(self.setup_finished)
@@ -639,7 +670,6 @@ class MainWidget(QWidget):
 
         self.ls9_mix_widget = Ls9MixWidget(self.setup_widget.server)
         self.layout.addWidget(self.ls9_mix_widget)
-        print(self.ls9_mix_widget.parent())
         self.setup_widget.hide()
         self.setup_widget.deleteLater()
 
@@ -647,6 +677,16 @@ class MainWidget(QWidget):
         qdarktheme.setup_theme()
 
         self.showMaximized()
+    
+    def closeEvent(self, event):
+        print(1)
+        if global_modify:
+            reply = QMessageBox.question(main_widget, "Save Changes", "Do you want to save the changes?", QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            if reply == QMessageBox.StandardButton.Save:
+                self.ls9_mix_widget.save_button.click()
+            elif reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+        event.accept()
 
 
 if __name__ == '__main__':
@@ -654,10 +694,7 @@ if __name__ == '__main__':
     import sys
     import ls9
 
-    app = QApplication([])
-    QApplication.setStyle("macos")
-
     main_widget = MainWidget()
     main_widget.show()
-    
+
     sys.exit(app.exec())
