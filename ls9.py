@@ -329,9 +329,63 @@ class LS9_NRPN_Sender:
         self.midi_out.send_message((self.head, 0x62, base & 0x7f))
         self.midi_out.send_message((self.head, 0x06, 0x00))
 
+class LS9_SysEx_Sender:
+    def __init__(self, midi_out, channel):
+        self.midi_out = midi_out
+        self.head = 0xf0
+        self.tail = 0xf7
+    
+    def send_input_on(self, channel):
+        # 240 67 16 62 18 1 0 49 0 0 0 channel 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 49, 0, 0, 0, channel - 1, 0, 0, 0, 0, 1, self.tail))
+    
+    def send_input_off(self, channel):
+        # 240 67 16 62 18 1 0 49 0 0 0 channel 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 49, 0, 0, 0, channel - 1, 0, 0, 0, 0, 0, self.tail))
+    
+    def send_input_to_mix_on(self, channel, mix):
+        # 240 67 16 62 18 1 0 67 0 3*mix 0 channel 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 67, 0, 3 * mix - 3, 0, channel - 1, 0, 0, 0, 0, 1, self.tail))
+    
+    def send_input_to_mix_off(self, channel, mix):
+        # 240 67 16 62 18 1 0 67 0 3*mix 0 channel 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 67, 0, 3 * mix - 3, 0, channel - 1, 0, 0, 0, 0, 0, self.tail))
+    
+    def send_output_to_matrix_on(self, mix, matrix):
+        # 240 67 16 62 18 1 0 85 0 3*matrix 0 mix 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 85, 0, 3 * matrix - 3, 0, mix - 1, 0, 0, 0, 0, 1, self.tail))
+    
+    def send_output_to_matrix_off(self, mix, matrix):
+        # 240 67 16 62 18 1 0 85 0 3*matrix 0 mix 0 0 0 0 ON/OFF 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 85, 0, 3 * matrix - 3, 0, mix - 1, 0, 0, 0, 0, 0, self.tail))
+    
+    def send_mix_pan(self, mix, pan):
+        if pan > 0:
+            # 240 67 16 62 18 1 0 87 0 2 0 mix 0 0 0 0 0 pan 247
+            self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 87, 0, 2, 0, mix - 1, 0, 0, 0, 0, 0, pan, self.tail))
+        else:
+            # 240 67 16 62 18 1 0 87 0 2 0 0 15 127 127 127 128 - pan 247
+            self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 87, 0, 2, 0, 0, 15, 127, 127, 127, 128 - pan, self.tail))
+    
+    def send_input_pan(self, input, pan):
+        if pan > 0:
+            # 240 67 16 62 18 1 0 50 0 1 0 input 0 0 0 0 0 pan 247
+            self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 50, 0, 1, 0, input - 1, 0, 0, 0, 0, 0, pan, self.tail))
+        else:
+            # 240 67 16 62 18 1 0 50 0 1 0 0 15 127 127 127 128 - pan 247
+            self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 50, 0, 1, 0, 0, 15, 127, 127, 127, 128 - pan, self.tail))
+    
+    def link_mix(self, mix):
+        # 240 67 16 62 18 1 0 34 0 0 0 mix 0 0 0 0 UNLINK/LINK 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 34, 0, 0, 0, mix - 1, 0, 0, 0, 0, 1, self.tail))
+
+    def unlink_mix(self, mix):
+        # 240 67 16 62 18 1 0 34 0 0 0 mix 0 0 0 0 UNLINK/LINK 247
+        self.midi_out.send_message((self.head, 67, 16, 62, 18, 1, 0, 34, 0, 0, 0, mix - 1, 0, 0, 0, 0, 0, self.tail))
+    
 class LS9_mix:
-    def __init__(self, NRPN, controlled_inputs, controlled_dca, effect_ports, input_alias, cues):
-        self.NRPN = NRPN
+    def __init__(self, midi_sender, controlled_inputs, controlled_dca, effect_ports, input_alias, cues):
+        self.midi_sender = midi_sender
         self.controlled_inputs = controlled_inputs
         self.controlled_dca = controlled_dca
         self.effect_ports = effect_ports
@@ -347,12 +401,12 @@ class LS9_mix:
     def send_initialize(self):
         for input in self.controlled_inputs:
             for dca in self.controlled_dca:
-                self.NRPN.send_input_to_mix_off(input, dca)
-            self.NRPN.send_input_off(input)
+                self.midi_sender.send_input_to_mix_off(input, dca)
+            self.midi_sender.send_input_off(input)
         
         for dca in self.controlled_dca:
             for effect in self.effect_ports:
-                self.NRPN.send_output_to_matrix_off(dca, effect)
+                self.midi_sender.send_output_to_matrix_off(dca, effect)
         
         self.channel_on = {}
         for input in self.controlled_inputs:
@@ -374,25 +428,25 @@ class LS9_mix:
             last_assignment = self.dca[dca]
             for input in current_assignment:
                 if input not in last_assignment:
-                    self.NRPN.send_input_to_mix_on(input, dca)
+                    self.midi_sender.send_input_to_mix_on(input, dca)
             for input in last_assignment:
                 if input not in current_assignment:
-                    self.NRPN.send_input_to_mix_off(input, dca)
+                    self.midi_sender.send_input_to_mix_off(input, dca)
             self.dca[dca] = current_assignment.copy()
             for input in current_assignment:
                 channel_on[input] = 1
             for effect in self.effects[dca]:
                 if effect not in target_cue.effects[dca]:
-                    self.NRPN.send_output_to_matrix_off(dca, effect)
+                    self.midi_sender.send_output_to_matrix_off(dca, effect)
             for effect in target_cue.effects[dca]:
                 if effect not in self.effects[dca]:
-                    self.NRPN.send_output_to_matrix_on(dca, effect)
+                    self.midi_sender.send_output_to_matrix_on(dca, effect)
             self.effects[dca] = target_cue.effects[dca]
         for input in self.controlled_inputs:
             if input in channel_on and input not in self.channel_on:
-                self.NRPN.send_input_on(input)
+                self.midi_sender.send_input_on(input)
             if input in self.channel_on and input not in channel_on:
-                self.NRPN.send_input_off(input)
+                self.midi_sender.send_input_off(input)
         self.channel_on = channel_on
 
     def go_cue(self, target_cue_idx):
@@ -622,7 +676,7 @@ class OSC_server():
         except socket.timeout:
             return None
 
-def generate_callback_function(nrpn_parser):
+def generate_nrpn_callback_function(nrpn_parser):
     address = 0
     value = 0
     state = 0
@@ -657,6 +711,13 @@ def generate_callback_function(nrpn_parser):
             state = 0
     return midi_callback
 
+def generate_sysex_callback_function(sysex_parser):
+    def midi_callback(message, time):
+        message = message[0]
+        if message[0] == 0xf0:
+            sysex_parser(message)
+    return midi_callback
+
 def generate_nrpn_parser(ls9_mix):
     def parse_nrpn_input(address, value):
         if address >= 0x3a5a and address <= 0x3a61:
@@ -667,9 +728,23 @@ def generate_nrpn_parser(ls9_mix):
                 ls9_mix.previous_cue()
     return parse_nrpn_input
 
+def generate_sysex_parser(ls9_mix):
+    # 240, 67, 16, 62, 18, 1, 2, 57, 0, 53, 0, 0, 0, 0, 0, 8, 0, 247 - Next
+    # 240, 67, 16, 62, 18, 1, 2, 57, 0, 53, 0, 0, 0, 0, 0, 16, 0, 247 - Previous
+    # Exact Match
+    def parse_sysex_input(message):
+        if message == [240, 67, 16, 62, 18, 1, 2, 57, 0, 53, 0, 0, 0, 0, 0, 8, 0, 247]:
+            ls9_mix.next_cue()
+        elif message == [240, 67, 16, 62, 18, 1, 2, 57, 0, 53, 0, 0, 0, 0, 0, 16, 0, 247]:
+            ls9_mix.previous_cue()
+    
+    return parse_sysex_input
+
+
 class LS9_mix_server():
     def __init__(self, controlled_inputs = controlled_inputs, controlled_dca = controlled_dca, effect_ports = effect_ports, input_alias = input_alias):
         self.midi_in = rtmidi.MidiIn()
+        self.midi_in.ignore_types(sysex=False)
         self.midi_out = rtmidi.MidiOut()
         self.ls9 = LS9_NRPN_Sender(self.midi_out, 0)
         self.mix = LS9_mix(self.ls9, controlled_inputs, controlled_dca, effect_ports, input_alias, Mix_cue_sheet.from_array(controlled_inputs, controlled_dca, effect_ports, [
@@ -691,12 +766,27 @@ class LS9_mix_server():
         self.midi_out.open_port(idx)
 
     def start(self):
+        # Test Sysex
+        sysex = False
+        def sysex_tester(message, time):
+            message = message[0]
+            if message == [240, 67, 16, 62, 18, 127, 247]:
+                nonlocal sysex
+                sysex = True
+
+        self.midi_in.set_callback(sysex_tester)
+        sleep(1)
+        if not sysex:
+            self.midi_in.set_callback(generate_nrpn_callback_function(generate_nrpn_parser(self.mix)))
+        else:
+            print('Sysex ON')
+            self.midi_in.set_callback(generate_sysex_callback_function(generate_sysex_parser(self.mix)))
+            self.mix.midi_sender = LS9_SysEx_Sender(self.midi_out, 0)
+
         self.enabled = True     
         self.mix.connected = True     
 
         self.mix.send_initialize()
-
-        self.midi_in.set_callback(generate_callback_function(generate_nrpn_parser(self.mix)))
 
         def socket_poll():
             while 1:
