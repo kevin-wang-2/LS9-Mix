@@ -382,7 +382,6 @@ class Mix_cue_sheet:
                     dca_assignment = {}
                     for dca in self.controlled_dca:
                         dca_assignment[dca] = []
-                    for dca in self.controlled_dca:
                         dca_len = block_data[0]
                         block_data = block_data[1:]
                         for i in range(dca_len):
@@ -392,17 +391,15 @@ class Mix_cue_sheet:
                     effect_assignment = {}
                     for dca in self.controlled_dca:
                         effect_assignment[dca] = []
-                    while len(block_data) > 0:
                         effect_len = block_data[0]
                         block_data = block_data[1:]
                         for i in range(effect_len):
-                            effect_assignment[block_data[0]].append(block_data[1])
-                            block_data = block_data[2:]
+                            effect_assignment[dca].append(block_data[0])
+                            block_data = block_data[1:]
                 elif block_magic == self.dca_name_header:
                     dca_name = {}
                     for dca in self.controlled_dca:
                         dca_name[dca] = ''
-                    for dca in self.controlled_dca:
                         dca_len = int.from_bytes(block_data[0:2], 'big')
                         block_data = block_data[2:]
                         dca_name[dca] = block_data[0:dca_len].decode('utf-8')
