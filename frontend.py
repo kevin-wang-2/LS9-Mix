@@ -54,6 +54,15 @@ class LS9MixTableModel(QAbstractTableModel):
                 return QColor("#0000FF")
             else:
                 return QColor("#000000")
+        elif role == Qt.ItemDataRole.FontRole:
+            if index.column() > 1:
+                cue_num = index.row()
+                dca = index.column() - 2
+                if len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 0:
+                    font = QFont()
+                    font.setItalic(True)
+                    return font
+            return QVariant()
         elif role == Qt.ItemDataRole.DisplayRole:
             cue_num = index.row()
             if index.column() == 0:
@@ -66,7 +75,7 @@ class LS9MixTableModel(QAbstractTableModel):
             else:
                 dca = index.column() - 2
                 if len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 0:
-                    return ""
+                    return self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]]
                 elif self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]] != "":
                     return self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]]
                 elif len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 1:
@@ -285,11 +294,19 @@ class DCAEditDialog(QDialog):
 
         # Double List with Move In (<<) and Move Ou (>>) Buttons, Left is unassigned inputs, right is assigned inputs
         self.dca_layout = QHBoxLayout()
-        self.buttons = QVBoxLayout()
+        self.left_panel = QVBoxLayout()
+        self.input_panel = QHBoxLayout()
+        self.group_panel = QHBoxLayout()
+        self.input_buttons = QVBoxLayout()
+        self.group_buttons = QVBoxLayout()
         self.unassigned_list = QListWidget()
+        # Group List dropdown selection
+        self.group_list = QComboBox()
         self.assigned_list = QListWidget()
         self.move_out = QPushButton("<< Unassign")
         self.move_in = QPushButton(">> Assign")
+        self.assign = QPushButton("Assign")
+        self.merge = QPushButton("Merge")
 
         self.assignment = parent.model.mix.cues.get_cue(index).dca[ls9.controlled_dca[dca]].copy()
         # Add unsassigned 
@@ -313,6 +330,14 @@ class DCAEditDialog(QDialog):
                     self.unassigned_list.item(i).setFont(QFont("Arial", italic=True))
                     break
         
+        def insert_item(list, item):
+            for i in range(list.count()):
+                if item.data(Qt.ItemDataRole.UserRole) < list.item(i).data(Qt.ItemDataRole.UserRole):
+                    list.insertItem(i, item)
+                    break
+            else:
+                list.addItem(item)
+
         def move_in():
             selected_items = self.unassigned_list.selectedItems()
             for item in selected_items:
@@ -322,18 +347,12 @@ class DCAEditDialog(QDialog):
                 item.setFont(QFont("Arial", italic=False))
 
                 # Search the position to insert
-                for i in range(self.assigned_list.count()):
-                    if item.data(Qt.ItemDataRole.UserRole) < self.assigned_list.item(i).data(Qt.ItemDataRole.UserRole):
-                        self.assigned_list.insertItem(i, item)
-                        break
-                else:
-                    self.assigned_list.addItem(item)
+                insert_item(self.assigned_list, item)
                 self.assigned_list.update()
 
                 # Add the input to the assignment
                 self.assignment.append(item.data(Qt.ItemDataRole.UserRole))
 
-        
         def move_out():
             selected_items = self.assigned_list.selectedItems()
             for item in selected_items:
@@ -345,12 +364,7 @@ class DCAEditDialog(QDialog):
                 self.assigned_list.takeItem(self.assigned_list.row(item))
                 
                 # Search the position to insert
-                for i in range(self.unassigned_list.count()):
-                    if item.data(Qt.ItemDataRole.UserRole) < self.unassigned_list.item(i).data(Qt.ItemDataRole.UserRole):
-                        self.unassigned_list.insertItem(i, item)
-                        break
-                else:
-                    self.unassigned_list.addItem(item)
+                insert_item(self.unassigned_list, item)
                 self.unassigned_list.update()
 
                 # Remove the input from the assignment
@@ -363,10 +377,69 @@ class DCAEditDialog(QDialog):
         self.unassigned_list.doubleClicked.connect(move_in)
         self.assigned_list.doubleClicked.connect(move_out)
 
-        self.buttons.addWidget(self.move_in)
-        self.buttons.addWidget(self.move_out)
-        self.dca_layout.addWidget(self.unassigned_list)
-        self.dca_layout.addLayout(self.buttons)
+        # Group List
+        for group in parent.model.mix.input_groups:
+            self.group_list.addItem(group)
+        
+        def assign():
+            # 1. Remove all the inputs from the current assigned list
+            for i in range(self.assigned_list.count(), 0, -1):
+                item = self.assigned_list.item(i - 1)
+                self.assigned_list.takeItem(i - 1)
+                insert_item(self.unassigned_list, item)
+            
+            self.assignment = []
+            
+            # 2. Add all the inputs from the selected group
+            for i in parent.model.mix.input_groups[self.group_list.currentText()]:
+                # 2.1 Get the item from the unassigned list
+                item = self.unassigned_list.findItems(parent.model.mix.input_alias[i], Qt.MatchFlag.MatchExactly)[0]
+
+                # 2.2 Add the item to the assigned list
+                self.unassigned_list.takeItem(self.unassigned_list.row(item))
+                insert_item(self.assigned_list, item)
+                self.assignment.append(i)
+                item.setForeground(QColor("#FFFFFF"))
+                item.setFont(QFont("Arial", italic=False))
+            # 3. Set name
+            self.name.setText(self.group_list.currentText())
+            
+            self.assigned_list.update()
+            self.unassigned_list.update()
+
+        def merge():
+            for i in parent.model.mix.input_groups[self.group_list.currentText()]:
+                if i not in self.assignment:
+                    # 2.1 Get the item from the unassigned list
+                    item = self.unassigned_list.findItems(parent.model.mix.input_alias[i], Qt.MatchFlag.MatchExactly)[0]
+
+                    # 2.2 Add the item to the assigned list
+                    self.unassigned_list.takeItem(self.unassigned_list.row(item))
+                    insert_item(self.assigned_list, item)
+                    self.assignment.append(i)
+                    item.setForeground(QColor("#FFFFFF"))
+                    item.setFont(QFont("Arial", italic=False))
+
+            self.assigned_list.update()
+            self.unassigned_list.update()
+
+        self.assign.clicked.connect(assign)
+        self.merge.clicked.connect(merge)
+
+        # Input Panel
+        self.input_panel.addWidget(self.unassigned_list)
+        self.input_buttons.addWidget(self.move_in)
+        self.input_buttons.addWidget(self.move_out)
+        self.input_panel.addLayout(self.input_buttons)
+        self.left_panel.addLayout(self.input_panel)
+
+        # Group Panel
+        self.group_panel.addWidget(self.group_list)
+        self.group_panel.addWidget(self.assign)
+        self.group_panel.addWidget(self.merge)
+        self.left_panel.addLayout(self.group_panel)
+
+        self.dca_layout.addLayout(self.left_panel)
         self.dca_layout.addWidget(self.assigned_list)
 
         self.layout.addLayout(self.dca_layout)
@@ -391,6 +464,158 @@ class DCAEditDialog(QDialog):
 
         # Bind Enter key to OK button
         self.ok_button.setDefault(True)
+
+
+class InputGroupSetupModel(QAbstractTableModel):
+    def __init__(self, mix):
+        super().__init__()
+        self.mix = mix
+    
+    def rowCount(self, parent):
+        return len(self.mix.input_groups)
+    
+    def columnCount(self, parent):
+        return len(self.mix.controlled_inputs) + 1
+    
+    def data(self, index, role):
+        # First column is name of the input group, other columns are checkboxes
+        if role == Qt.ItemDataRole.DisplayRole:
+            if index.column() == 0:
+                return list(self.mix.input_groups.keys())[index.row()]
+            else:
+                return QVariant()
+        return QVariant()
+    
+    def headerData(self, section, orientation, role):
+        if role != Qt.ItemDataRole.DisplayRole or orientation != Qt.Orientation.Horizontal:
+            return QVariant()
+        if section == 0:
+            return "Group"
+        return self.mix.input_alias[self.mix.controlled_inputs[section - 1]]
+
+
+class InputGroupSetupTable(QTableView):
+    def __init__(self, mix):
+        super().__init__()
+        self.model = InputGroupSetupModel(mix)
+        self.mix = mix
+        self.setModel(self.model)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.verticalHeader().setVisible(False)
+
+        # Generate checkboxes
+        self.generate_checkbox()
+
+    def generate_checkbox(self):
+        def generate_checkbox_clicked(checkbox, input_idx, group_idx):
+            def checkbox_clicked(e):
+                if checkbox.isChecked():
+                    if self.mix.controlled_inputs[input_idx] not in self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]]:
+                        self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]].append(self.mix.controlled_inputs[input_idx])
+                        self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]].sort()
+                else:
+                    if self.mix.controlled_inputs[input_idx] in self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]]:
+                        self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]].remove(self.mix.controlled_inputs[input_idx])
+                set_global_modify(True)
+            return checkbox_clicked
+
+        for input_idx in range(len(self.mix.controlled_inputs)):
+            for group_idx in range(len(self.mix.input_groups)):
+                checkbox = QCheckBox()
+                checkbox.clicked.connect(generate_checkbox_clicked(checkbox, input_idx, group_idx))
+                self.setIndexWidget(self.model.index(group_idx, input_idx + 1), checkbox)
+                if self.mix.controlled_inputs[input_idx] in self.mix.input_groups[list(self.mix.input_groups.keys())[group_idx]]:
+                    checkbox.setChecked(True)
+                
+                # For the "ALL" group, disable the checkboxes
+                if group_idx == 0:
+                    checkbox.setEnabled(False)
+
+    def mouseDoubleClickEvent(self, e):
+        if len(self.selectedIndexes()) == 0:
+            return
+        # If the first column is double clicked, replace the cell with a textbox to edit the name
+        if self.selectedIndexes()[0].column() == 0 and self.selectedIndexes()[0].row() != 0:
+            row = self.selectedIndexes()[0].row()
+            col = self.selectedIndexes()[0].column()
+            edit = QLineEdit()
+
+            def edit_finish():
+                nonlocal row, col
+                # If the name is empty, do nothing
+                if edit.text() == "":
+                    self.setIndexWidget(self.model.index(row, col), None)
+                    return
+                self.model.mix.input_groups[edit.text()] = self.model.mix.input_groups[list(self.model.mix.input_groups.keys())[row]].copy()
+                del self.model.mix.input_groups[list(self.model.mix.input_groups.keys())[row]]
+                self.setIndexWidget(self.model.index(row, col), None)
+                set_global_modify(True)
+                self.model.beginResetModel()
+                self.model.endResetModel()
+                self.update()
+            edit.editingFinished.connect(edit_finish)
+
+            edit.setText(list(self.model.mix.input_groups.keys())[self.selectedIndexes()[0].row()])
+            self.setIndexWidget(self.selectedIndexes()[0], edit)
+
+    def update(self):
+        super().update()
+        self.generate_checkbox()
+
+
+class InputGroupSetupDialog(QDialog):
+    def __init__(self, mix, parent=None):
+        super().__init__(parent=parent)
+        self.setWindowTitle("Setup Input Group")
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+        self.table = InputGroupSetupTable(mix)
+        self.layout.addWidget(self.table)
+
+        # Button Group: Add, Delete
+        self.button_group = QHBoxLayout()
+
+        # Add Group Button
+        self.add_group_button = QPushButton("Add Group")
+        def add_group():
+            name = "New Group"
+            while name in mix.input_groups:
+                name += "_1"
+            mix.input_groups[name] = []
+            set_global_modify(True)
+            self.table.model.beginInsertRows(QModelIndex(), len(mix.input_groups) - 1, len(mix.input_groups) - 1)
+            self.table.model.endInsertRows()
+            self.table.update()
+        self.add_group_button.clicked.connect(add_group)
+
+        # Delete Group Button
+        self.delete_group_button = QPushButton("Delete Group")
+        def delete_group():
+            if len(self.table.selectedIndexes()) == 0:
+                return
+            row = self.table.selectedIndexes()[0].row()
+            if row == 0:
+                return
+            del mix.input_groups[list(mix.input_groups.keys())[row]]
+            set_global_modify(True)
+            self.table.model.beginRemoveRows(QModelIndex(), row, row)
+            self.table.model.endRemoveRows()
+            self.table.update()
+        self.delete_group_button.clicked.connect(delete_group)
+
+        self.button_group.addWidget(self.add_group_button)
+        self.button_group.addWidget(self.delete_group_button)
+        self.layout.addLayout(self.button_group)
+
+        # Add OK button
+        self.ok_button = QPushButton("OK")
+        self.ok_button.clicked.connect(self.accept)
+        self.layout.addWidget(self.ok_button)
+
+        # Maximize the window
+        self.showMaximized()
 
 
 class SetupWidget(QWidget):
@@ -575,6 +800,13 @@ class Ls9MixWidget(QWidget):
             self.view.selectRow(selected_row)
         self.delete_button.clicked.connect(delete_cue)
 
+        # Mix Group Setup Button
+        self.mix_group_setup_button = QPushButton("Setup Mix Group")
+        def mix_group_setup():
+            dialog = InputGroupSetupDialog(self.server.mix)
+            dialog.exec()
+        self.mix_group_setup_button.clicked.connect(mix_group_setup)
+
         # Connect Console Button
         self.connect_button = QPushButton("Connect Console")
         def connect_console():
@@ -596,6 +828,7 @@ class Ls9MixWidget(QWidget):
         self.control_layout.addWidget(self.duplicate_button)
         self.control_layout.addWidget(self.delete_button)
         self.control_layout.addStretch()
+        self.control_layout.addWidget(self.mix_group_setup_button)
         self.control_layout.addWidget(self.connect_button)
         
 
@@ -646,6 +879,7 @@ class Ls9MixWidget(QWidget):
         else:
             self.view.mode = 0
             self.mode_button.setText("Current Mode: Show Mode")
+
 
 class MainWidget(QWidget):
     def __init__(self, parent=None):

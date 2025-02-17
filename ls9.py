@@ -542,6 +542,7 @@ class LS9_mix:
         self.controlled_dca = controlled_dca
         self.effect_ports = effect_ports
         self.input_alias = input_alias
+        self.input_groups = {'ALL': controlled_inputs.copy(), 'Male': [], 'Female': []}
 
         self.connected = False
         
@@ -557,6 +558,7 @@ class LS9_mix:
         self.effect_ports_magic = 0x03
         self.input_alias_magic = 0x04
         self.cue_data_magic = 0x05
+        self.input_group_magic = 0x06
 
     def send_initialize(self):
         for input in self.controlled_inputs:
@@ -661,6 +663,7 @@ class LS9_mix:
         Controlled DCA
         Effect Ports
         Input Alias
+        Input Groups
         Cue Data
 
         Controlled Inputs:
@@ -684,6 +687,15 @@ class LS9_mix:
             Input Number (2 bytes)
             Length of the alias (1 byte)
             Alias (variable length)
+        
+        Input Groups:
+        Length of the input groups (1 byte)
+        For each group:
+            Length of the group name (1 byte)
+            Group Name (variable length)
+            Length of the group members (1 byte)
+            For each member:
+                Member Number (1 byte)
         
         Cue Data:
         Realization in the Mix_cue_sheet.to_binary()
@@ -729,6 +741,19 @@ class LS9_mix:
         binary_data += input_alias_len.to_bytes(4, 'big')
         binary_data += self.input_alias_magic.to_bytes(1, 'big')
         binary_data += input_alias_data
+
+        input_group_data = b''
+        input_group_data += len(self.input_groups).to_bytes(1, 'big')
+        for group in self.input_groups:
+            input_group_data += len(group).to_bytes(1, 'big')
+            input_group_data += group.encode('utf-8')
+            input_group_data += len(self.input_groups[group]).to_bytes(1, 'big')
+            for member in self.input_groups[group]:
+                input_group_data += member.to_bytes(1, 'big')
+        input_group_len = len(input_group_data) + 5
+        binary_data += input_group_len.to_bytes(4, 'big')
+        binary_data += self.input_group_magic.to_bytes(1, 'big')
+        binary_data += input_group_data
 
         mutex.acquire()
         cue_data = self.cues.to_binary()
@@ -797,6 +822,22 @@ class LS9_mix:
                 mutex.acquire()
                 self.cues.load_binary(controlled_inputs, controlled_dca, effect_ports, block_data)
                 mutex.release()
+            elif block_magic == self.input_group_magic:
+                input_group = {'ALL': self.controlled_inputs}
+                input_group_len = block_data[0]
+                block_data = block_data[1:]
+                for i in range(input_group_len):
+                    group_len = block_data[0]
+                    block_data = block_data[1:]
+                    group = block_data[0:group_len].decode('utf-8')
+                    block_data = block_data[group_len:]
+                    input_group[group] = []
+                    member_len = block_data[0]
+                    block_data = block_data[1:]
+                    for i in range(member_len):
+                        input_group[group].append(block_data[0])
+                        block_data = block_data[1:]
+                self.input_groups = input_group
         
         mutex.acquire()
         self.controlled_inputs = controlled_inputs
