@@ -18,11 +18,12 @@ input_alias = {33: 'Mic 1', 34: 'Mic 2', 35: 'Mic 3', 36: 'Mic 4', 37: 'Mic 5', 
 mutex = Lock()
 
 class Mix_cue:
-    def __init__(self, number, name, dca, effects, dca_name = {}):
+    def __init__(self, number, name, dca, effects, dca_name = {}, console_cue = None):
         self.number = number
         self.name = name
         self.dca = dca
         self.dca_name = dca_name
+        self.console_cue = console_cue
         if dca_name == {}:
             for dca in self.dca:
                 self.dca_name[dca] = ""
@@ -67,6 +68,7 @@ class Mix_cue_sheet:
         self.dca_assignment_header = 0x11
         self.effect_assignment_header = 0x12
         self.dca_name_header = 0x13
+        self.console_cue_header = 0x14
         self.count_header = 3
     
     def add_cue(self):
@@ -233,6 +235,51 @@ class Mix_cue_sheet:
         self.cues[index].effects[dca] = effects
         return True
     
+    def set_console_cue(self, index, console_cue):
+        if index < 0 or index >= len(self.cues):
+            return False
+        self.cues[index].console_cue = console_cue
+        return True
+
+    def calculate_delay(self, index):
+        if index == len(self.cues) - 1:
+            return 0
+        total_midi_bytes = 0
+        current_cue = self.cues[index]
+        next_cue = self.cues[index + 1]
+
+        current_used_inputs = set()
+        next_used_inputs = set()
+
+        dca_changes = 0
+
+        for dca in self.controlled_dca:
+            current_used_inputs.add(tuple(current_cue.dca[dca]))
+            next_used_inputs.add(tuple(next_cue.dca[dca]))
+
+            # Both the DCAs in this input but not in the next or vice versa are counted as a change
+            dca_changes += len(set(current_cue.dca[dca]) ^ set(next_cue.dca[dca]))
+        
+        # Each DCA change causes 3 MIDI CC messages
+        total_midi_bytes += dca_changes * 9
+        
+        # Each input usage change causes 3 MIDI CC messages
+        total_midi_bytes += len(current_used_inputs ^ next_used_inputs) * 9
+
+        # Each effect change causes 3 MIDI CC messages
+        for dca in self.controlled_dca:
+            total_midi_bytes += len(set(current_cue.effects[dca]) ^ set(next_cue.effects[dca])) * 9
+        
+        # Console cue change causes 1 MIDI PC message
+        if next_cue.console_cue is not None:
+            total_midi_bytes += 2
+
+        # Baud rate is 31250
+        midi_delay_ms = total_midi_bytes * 8 / 31250 * 1000
+
+        # Round to 3 decimal places
+        return round(midi_delay_ms, 3)
+
     def get_cue(self, index):
         if index < 0 or index >= len(self.cues):
             return None
@@ -282,6 +329,7 @@ class Mix_cue_sheet:
             DCA Assignment
             Effect Assignment
             DCA Name
+            Console Cue Recall
         
         DCA Assignment:
             For each DCA:
@@ -299,17 +347,21 @@ class Mix_cue_sheet:
             For each DCA:
                 Length of the DCA Name (2 bytes)
                 DCA Name (variable length)
+        
+        Console Cue Recall:
+            Cue Number (2 bytes)
         """
         binrary_data = b'' # Data without the length
         
 
         binrary_data += len(self.cues).to_bytes(4, 'big')
         for cue in self.cues:
+            cue_data = b''
+            count_header = self.count_header
             binrary_data += len(cue.number).to_bytes(2, 'big')
             binrary_data += cue.number.encode('utf-8')
             binrary_data += len(cue.name).to_bytes(2, 'big')
             binrary_data += cue.name.encode('utf-8')
-            binrary_data += self.count_header.to_bytes(1, 'big')
             
             dca_block = b''
             dca_block += self.dca_assignment_header.to_bytes(1, 'big')
@@ -318,8 +370,8 @@ class Mix_cue_sheet:
                 for input in cue.dca[dca]:
                     dca_block += input.to_bytes(1, 'big')
             dca_length = len(dca_block) + 2
-            binrary_data += dca_length.to_bytes(2, 'big')
-            binrary_data += dca_block
+            cue_data += dca_length.to_bytes(2, 'big')
+            cue_data += dca_block
 
             effect_block = b''
             effect_block += self.effect_assignment_header.to_bytes(1, 'big')
@@ -328,8 +380,8 @@ class Mix_cue_sheet:
                 for effect in cue.effects[dca]:
                     effect_block += effect.to_bytes(1, 'big')
             effect_length = len(effect_block) + 2
-            binrary_data += effect_length.to_bytes(2, 'big')
-            binrary_data += effect_block
+            cue_data += effect_length.to_bytes(2, 'big')
+            cue_data += effect_block
 
             dca_name_block = b''
             dca_name_block += self.dca_name_header.to_bytes(1, 'big')
@@ -337,8 +389,19 @@ class Mix_cue_sheet:
                 dca_name_block += len(cue.dca_name[dca]).to_bytes(2, 'big')
                 dca_name_block += cue.dca_name[dca].encode('utf-8')
             dca_name_length = len(dca_name_block) + 2
-            binrary_data += dca_name_length.to_bytes(2, 'big')
-            binrary_data += dca_name_block
+            cue_data += dca_name_length.to_bytes(2, 'big')
+            cue_data += dca_name_block
+
+            if cue.console_cue is not None:
+                console_cue_block = b''
+                console_cue_block += self.console_cue_header.to_bytes(1, 'big')
+                console_cue_block += cue.console_cue.to_bytes(2, 'big')
+                console_cue_length = len(console_cue_block) + 2
+                cue_data += console_cue_length.to_bytes(2, 'big')
+                cue_data += console_cue_block
+                count_header += 1
+            
+            binrary_data += count_header.to_bytes(1, 'big') + cue_data
 
         return binrary_data
 
@@ -378,6 +441,8 @@ class Mix_cue_sheet:
                 block_magic = block_data[0]
                 block_data = block_data[1:]
 
+                console_cue = None
+
                 if block_magic == self.dca_assignment_header:
                     dca_assignment = {}
                     for dca in self.controlled_dca:
@@ -405,8 +470,10 @@ class Mix_cue_sheet:
                         dca_name[dca] = block_data[0:dca_len].decode('utf-8')
                         block_data = block_data[dca_len:]
                         dca_name[dca] = block_data[0:dca_len].decode('utf-8')
+                elif block_magic == self.console_cue_header:
+                    console_cue = int.from_bytes(block_data, 'big')
                     
-            self.cues.append(Mix_cue(cue_number, cue_name, dca_assignment, effect_assignment, dca_name))
+            self.cues.append(Mix_cue(cue_number, cue_name, dca_assignment, effect_assignment, dca_name, console_cue))
 
     @classmethod
     def from_array(cls, controlled_inputs, controlled_dca, effect_ports, data):
@@ -424,6 +491,7 @@ class LS9_NRPN_Sender:
     def __init__(self, midi_out, channel):
         self.midi_out = midi_out
         self.head = 0xb0 | channel
+        self.pc_head = 0xc0 | channel
     
     def send_input_on(self, channel):
         base = 0x05b6
@@ -480,6 +548,9 @@ class LS9_NRPN_Sender:
         self.midi_out.send_message((self.head, 0x63, base >> 7))
         self.midi_out.send_message((self.head, 0x62, base & 0x7f))
         self.midi_out.send_message((self.head, 0x06, 0x00))
+
+    def send_pc(self, pc):
+        self.midi_out.send_message((self.pc_head, pc))
 
 class LS9_SysEx_Sender:
     def __init__(self, midi_out, channel):
@@ -609,6 +680,8 @@ class LS9_mix:
                 self.midi_sender.send_input_on(input)
             if input in self.channel_on and input not in channel_on:
                 self.midi_sender.send_input_off(input)
+        if target_cue.console_cue is not None:
+            self.midi_sender.send_pc(target_cue.console_cue)
         self.channel_on = channel_on
 
     def go_cue(self, target_cue_idx):

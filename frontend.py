@@ -5,7 +5,7 @@ from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 import qdarktheme
 
-headers = ["Cue Number", "Cue Name", "DCA1", "DCA2", "DCA3", "DCA4", "DCA5", "DCA6", "DCA7", "DCA8"]
+headers = ["Cue Number", "Cue Name", "Console Cue"]
 
 global_modify = True
 
@@ -31,15 +31,15 @@ class LS9MixTableModel(QAbstractTableModel):
         return len(self.mix.cues)
     
     def columnCount(self, parent):
-        return len(headers)
+        return len(self.mix.controlled_dca) + len(headers)
     
     def data(self, index, role):
         if role == Qt.ItemDataRole.BackgroundRole:
             cue_num = index.row()
             cue = self.mix.cues.get_cue(cue_num)
             column = index.column()
-            if column > 1:
-                dca = column - 2
+            if column > len(headers) - 1:
+                dca = column - len(headers)
                 if cue_num < len(self.mix.cues) - 1:
                     if cue.dca[ls9.controlled_dca[dca]] == self.mix.cues.get_cue(cue_num + 1).dca[ls9.controlled_dca[dca]] and cue.dca[ls9.controlled_dca[dca]] != []:
                         if cue.effects[ls9.controlled_dca[dca]] == self.mix.cues.get_cue(cue_num + 1).effects[ls9.controlled_dca[dca]]:
@@ -55,9 +55,9 @@ class LS9MixTableModel(QAbstractTableModel):
             else:
                 return QColor("#000000")
         elif role == Qt.ItemDataRole.FontRole:
-            if index.column() > 1:
+            if index.column() > len(headers) - 1:
                 cue_num = index.row()
-                dca = index.column() - 2
+                dca = index.column() - len(headers)
                 if len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 0:
                     font = QFont()
                     font.setItalic(True)
@@ -72,8 +72,10 @@ class LS9MixTableModel(QAbstractTableModel):
                     return self.mix.cues.get_cue(cue_num).number
             elif index.column() == 1:
                 return self.mix.cues.get_cue(cue_num).name
+            elif index.column() == 2:
+                return self.mix.cues.get_cue(cue_num).console_cue or ""
             else:
-                dca = index.column() - 2
+                dca = index.column() - len(headers)
                 if len(self.mix.cues.get_cue(cue_num).dca[ls9.controlled_dca[dca]]) == 0:
                     return self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]]
                 elif self.mix.cues.get_cue(cue_num).dca_name[ls9.controlled_dca[dca]] != "":
@@ -87,7 +89,10 @@ class LS9MixTableModel(QAbstractTableModel):
     def headerData(self, section, orientation, role):
         if role != Qt.ItemDataRole.DisplayRole or orientation != Qt.Orientation.Horizontal:
             return QVariant()
-        return headers[section]
+        if section < len(headers):
+            return headers[section]
+        else:
+            return "DCA" + str(self.mix.controlled_dca[section - len(headers)])
 
 
 class LS9MixTableView(QTableView):
@@ -128,11 +133,12 @@ class LS9MixTableView(QTableView):
                 if self.selectedIndexes()[0].column() == 0 or self.selectedIndexes()[0].column() == 1:
                     self.clipboard_mode = 1
                     self.clipboard = self.selectedIndexes()[0].row()
-                else:
+                elif self.selectedIndexes()[0].column() > len(headers) - 1:
                     self.clipboard_mode = 2
-                    assignment = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]].copy()
-                    effects = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).effects[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]].copy()
-                    dca_name = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca_name[ls9.controlled_dca[self.selectedIndexes()[0].column() - 2]]
+                    dca = self.selectedIndexes()[0].column() - len(headers)
+                    assignment = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[ls9.controlled_dca[dca]].copy()
+                    effects = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).effects[ls9.controlled_dca[dca]].copy()
+                    dca_name = self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca_name[ls9.controlled_dca[dca]]
 
                     self.clipboard = (assignment, effects, dca_name)
             elif e.key() == Qt.Key.Key_V:
@@ -156,6 +162,8 @@ class LS9MixTableView(QTableView):
                     effects = self.clipboard[1].copy()
                     dca_name = self.clipboard[2]
 
+                    target_dca = self.selectedIndexes()[0].column() - len(headers)
+
                     for input in assingment:
                         for dca in ls9.controlled_dca:
                             if input in self.mix.cues.get_cue(self.selectedIndexes()[0].row()).dca[dca]:
@@ -164,9 +172,9 @@ class LS9MixTableView(QTableView):
                                     self.mix.cues.set_effects_of_dca(self.selectedIndexes()[0].row(), dca, [])
 
                     # Paste on current DCA
-                    self.mix.cues.set_input_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], assingment)
-                    self.mix.cues.set_effects_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], effects)
-                    self.mix.cues.change_dca_name(self.selectedIndexes()[0].row(), ls9.controlled_dca[self.selectedIndexes()[0].column() - 2], dca_name)
+                    self.mix.cues.set_input_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[target_dca], assingment)
+                    self.mix.cues.set_effects_of_dca(self.selectedIndexes()[0].row(), ls9.controlled_dca[target_dca], effects)
+                    self.mix.cues.change_dca_name(self.selectedIndexes()[0].row(), ls9.controlled_dca[target_dca], dca_name)
 
                     # If it's current cue and console connected, go cue
                     if self.mix.current_cue == self.selectedIndexes()[0].row() and self.mix.connected:
@@ -193,7 +201,7 @@ class LS9MixTableView(QTableView):
                 edit = QLineEdit()
                 edit.setText(str(self.model.mix.cues.get_cue(cue_num).number))
 
-                def edit_finish():
+                def number_edit_finish():
                     try:
                         float(edit.text())
                     except ValueError:
@@ -205,23 +213,47 @@ class LS9MixTableView(QTableView):
                     self.update()
 
                 # On clicking away, save the new cue number
-                edit.editingFinished.connect(edit_finish)
+                edit.editingFinished.connect(number_edit_finish)
                 self.setIndexWidget(index, edit)
             elif column == 1:
                 set_global_modify(True)
                 edit = QLineEdit()
                 edit.setText(self.model.mix.cues.get_cue(cue_num).name)
 
-                def edit_finish():
+                def name_edit_finish():
                     self.mix.cues.change_name(cue_num, edit.text())
                     self.setIndexWidget(index, None)
                     self.update()
                 
-                edit.editingFinished.connect(edit_finish)
+                edit.editingFinished.connect(name_edit_finish)
                 self.setIndexWidget(index, edit)
-            else:
+            elif column == 2:
                 set_global_modify(True)
-                dca = column - 2
+                edit = QLineEdit()
+                edit.setText(str(self.model.mix.cues.get_cue(cue_num).console_cue or ""))
+
+                def cue_edit_finish():
+                    # If the input is empty, set console cue to None
+                    if edit.text() == "":
+                        self.mix.cues.set_console_cue(cue_num, None)
+                    else:
+                        try:
+                            console_cue = float(edit.text())
+                            if console_cue != int(console_cue) or console_cue < 0:
+                                raise ValueError
+                            console_cue = int(console_cue)
+                        except ValueError:
+                            self.setIndexWidget(index, None)
+                            return
+                        self.mix.cues.set_console_cue(cue_num, console_cue)
+                    self.setIndexWidget(index, None)
+                    self.update()
+                
+                edit.editingFinished.connect(cue_edit_finish)
+                self.setIndexWidget(index, edit)
+            elif column > len(headers) - 1:
+                set_global_modify(True)
+                dca = column - len(headers)
                 dialog = DCAEditDialog(self, cue_num, dca)
                 if dialog.exec() == QDialog.DialogCode.Accepted:
                     assignment = sorted(dialog.assignment)
@@ -618,6 +650,56 @@ class InputGroupSetupDialog(QDialog):
         self.showMaximized()
 
 
+class UltilityWidget(QWidget):
+    def __init__(self, mix):
+        super().__init__()
+        self.mix = mix
+        self.layout = QHBoxLayout()
+        self.setLayout(self.layout)
+
+        self.setWindowTitle("Ultilities")
+
+        # Three panels, the first panel is Delay, display the delay to go to next cue for each cue
+        self.delay_panel = QVBoxLayout()
+        self.delay_table = QTableWidget(len(self.mix.cues), 2)
+        self.delay_table.setHorizontalHeaderLabels(["Cue", "Delay (ms)"])
+        self.delay_table.verticalHeader().setVisible(False)
+        self.delay_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.delay_panel.addWidget(QLabel("Delay to Next Cue"))
+        self.delay_panel.addWidget(self.delay_table)
+
+        # Set the content of this table
+        for i in range(len(self.mix.cues)):
+            self.delay_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            delay = self.mix.cues.calculate_delay(i)
+            self.delay_table.setItem(i, 1, QTableWidgetItem(str(delay)))
+
+            # If delay is more than 10, color it yellow, if more than 100, color it red
+            if delay > 10:
+                if delay > 100:
+                    self.delay_table.item(i, 1).setForeground(QColor("#FF0000"))
+                else:
+                    self.delay_table.item(i, 1).setForeground(QColor("#FFFF00"))
+
+        # The second panel displays the input and their aliases
+        self.input_panel = QVBoxLayout()
+        self.input_table = QTableWidget(len(self.mix.input_alias), 2)
+        self.input_table.setHorizontalHeaderLabels(["Input", "Alias"])
+        self.input_table.verticalHeader().setVisible(False)
+        self.input_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.input_panel.addWidget(QLabel("Input Alias"))
+        self.input_panel.addWidget(self.input_table)
+
+        # Set the content of this table
+        for i in range(len(self.mix.input_alias)):
+            self.input_table.setItem(i, 0, QTableWidgetItem(str(i + 1)))
+            self.input_table.setItem(i, 1, QTableWidgetItem(self.mix.input_alias[self.mix.controlled_inputs[i]]))
+
+        # Vertical Splitter to split the two panels
+        self.layout.addLayout(self.delay_panel)
+        self.layout.addWidget(QSplitter(Qt.Orientation.Vertical))
+        self.layout.addLayout(self.input_panel)
+
 class SetupWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -807,6 +889,13 @@ class Ls9MixWidget(QWidget):
             dialog.exec()
         self.mix_group_setup_button.clicked.connect(mix_group_setup)
 
+        # Ultility Button
+        self.ultility_button = QPushButton("Ultilities")
+        def ultility():
+            self.ultility_window = UltilityWidget(self.server.mix)
+            self.ultility_window.show()
+        self.ultility_button.clicked.connect(ultility)
+
         # Connect Console Button
         self.connect_button = QPushButton("Connect Console")
         def connect_console():
@@ -829,6 +918,7 @@ class Ls9MixWidget(QWidget):
         self.control_layout.addWidget(self.delete_button)
         self.control_layout.addStretch()
         self.control_layout.addWidget(self.mix_group_setup_button)
+        self.control_layout.addWidget(self.ultility_button)
         self.control_layout.addWidget(self.connect_button)
         
 
