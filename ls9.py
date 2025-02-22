@@ -18,7 +18,7 @@ input_alias = {33: 'Mic 1', 34: 'Mic 2', 35: 'Mic 3', 36: 'Mic 4', 37: 'Mic 5', 
 mutex = Lock()
 
 class Mix_cue:
-    def __init__(self, number, name, dca, effects, dca_name = {}, console_cue = None):
+    def __init__(self, number, name, dca, effects, dca_name = {}, console_cue = None, position_preset = {}):
         self.number = number
         self.name = name
         self.dca = dca
@@ -28,6 +28,10 @@ class Mix_cue:
             for dca in self.dca:
                 self.dca_name[dca] = ""
         self.effects = effects
+        self.position_preset = {}
+        if self.position_preset == {}:
+            for dca in self.dca:
+                self.position_preset[dca] = 0
     
     @classmethod
     def from_dict(cls, data):
@@ -55,11 +59,15 @@ class Mix_cue_sheet:
         
         return Mix_cue(number, name, {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []}, {1: [], 2: [], 3: [], 4: [], 5: [], 6: [], 7: [], 8: []})
 
-    def __init__(self, controlled_inputs, controlled_dca, effect_ports):
+    def __init__(self, controlled_inputs, controlled_dca, effect_ports, position_presets = []):
         self.controlled_inputs = controlled_inputs
         self.controlled_dca = controlled_dca
         self.effect_ports = effect_ports
-
+        self.position_presets = position_presets
+        if self.position_presets == []:
+            cs_preset = {'name': 'cs', 'pan': 64, 'matrix_send': [0, 0, 0, 0, 0, 0, 0, 0], 'lr_send': 0, 'C_send': 1}
+            self.position_presets.append(cs_preset)
+        
         self.cues = [
             self.generate_blank_cue('0', 'Line Check')
         ]
@@ -69,6 +77,7 @@ class Mix_cue_sheet:
         self.effect_assignment_header = 0x12
         self.dca_name_header = 0x13
         self.console_cue_header = 0x14
+        self.position_preset_header = 0x15
         self.count_header = 3
     
     def add_cue(self):
@@ -241,6 +250,36 @@ class Mix_cue_sheet:
         self.cues[index].console_cue = console_cue
         return True
 
+    def set_dca_position_preset(self, index, dca, position_preset):
+        if index < 0 or index >= len(self.cues):
+            return False
+        if dca not in self.controlled_dca:
+            return False
+        if position_preset < 0 or position_preset >= len(self.position_presets):
+            return False
+        self.cues[index].position_preset[dca] = position_preset
+        return True
+
+    def add_position_preset(self, name, pan, matrix_send, lr_send, C_send):
+        self.position_presets.append({'name': name, 'pan': pan, 'matrix_send': matrix_send, 'lr_send': lr_send, 'C_send': C_send})
+        return True
+
+    def remove_position_preset(self, index):
+        if index <= 0 or index >= len(self.position_presets): # Prevent the removal of the default position preset
+            return False
+        for idx, cue in enumerate(self.cues):
+            for dca in self.controlled_dca:
+                if cue.position_preset[dca] == index:
+                    cue.position_preset[dca] = 0
+        self.position_presets.pop(index)
+        return True
+
+    def edit_position_preset(self, index, name, pan, matrix_send, lr_send, C_send):
+        if index <= 0 or index >= len(self.position_presets):
+            return False
+        self.position_presets[index] = {'name': name, 'pan': pan, 'matrix_send': matrix_send, 'lr_send': lr_send, 'C_send': C_send}
+        return True
+
     def calculate_delay(self, index):
         if index == len(self.cues) - 1:
             return 0
@@ -350,6 +389,10 @@ class Mix_cue_sheet:
         
         Console Cue Recall:
             Cue Number (2 bytes)
+
+        Position Preset:
+            For each DCA:
+                Position Preset (1 byte)
         """
         binrary_data = b'' # Data without the length
         
@@ -400,6 +443,16 @@ class Mix_cue_sheet:
                 cue_data += console_cue_length.to_bytes(2, 'big')
                 cue_data += console_cue_block
                 count_header += 1
+
+            if cue.position_preset != {}:
+                position_preset_block = b''
+                position_preset_block += self.position_preset_header.to_bytes(1, 'big')
+                for dca in self.controlled_dca:
+                    position_preset_block += cue.position_preset[dca].to_bytes(1, 'big')
+                position_preset_length = len(position_preset_block) + 2
+                cue_data += position_preset_length.to_bytes(2, 'big')
+                cue_data += position_preset_block
+                count_header += 1
             
             binrary_data += count_header.to_bytes(1, 'big') + cue_data
 
@@ -442,6 +495,7 @@ class Mix_cue_sheet:
                 block_data = block_data[1:]
 
                 console_cue = None
+                position_preset = {}
 
                 if block_magic == self.dca_assignment_header:
                     dca_assignment = {}
@@ -472,8 +526,12 @@ class Mix_cue_sheet:
                         dca_name[dca] = block_data[0:dca_len].decode('utf-8')
                 elif block_magic == self.console_cue_header:
                     console_cue = int.from_bytes(block_data, 'big')
+                elif block_magic == self.position_preset_header:
+                    for dca in self.controlled_dca:
+                        position_preset[dca] = block_data[0]
+                        block_data = block_data[1:]
                     
-            self.cues.append(Mix_cue(cue_number, cue_name, dca_assignment, effect_assignment, dca_name, console_cue))
+            self.cues.append(Mix_cue(cue_number, cue_name, dca_assignment, effect_assignment, dca_name, console_cue, position_preset))
 
     @classmethod
     def from_array(cls, controlled_inputs, controlled_dca, effect_ports, data):
@@ -550,7 +608,15 @@ class LS9_NRPN_Sender:
         self.midi_out.send_message((self.head, 0x06, 0x00))
 
     def send_pc(self, pc):
-        self.midi_out.send_message((self.pc_head, pc))
+        self.midi_out.send_message((self.pc_head, pc, 0))
+
+    def link_mix(self, mix):
+        # 240 67 16 62 18 1 0 34 0 0 0 mix 0 0 0 0 UNLINK/LINK 247
+        self.midi_out.send_message((240, 67, 16, 62, 18, 1, 0, 34, 0, 0, 0, mix - 1, 0, 0, 0, 0, 1, 247))
+
+    def unlink_mix(self, mix):
+        # 240 67 16 62 18 1 0 34 0 0 0 mix 0 0 0 0 UNLINK/LINK 247
+        self.midi_out.send_message((240, 67, 16, 62, 18, 1, 0, 34, 0, 0, 0, mix - 1, 0, 0, 0, 0, 0, 247))
 
 class LS9_SysEx_Sender:
     def __init__(self, midi_out, channel):
@@ -630,6 +696,7 @@ class LS9_mix:
         self.input_alias_magic = 0x04
         self.cue_data_magic = 0x05
         self.input_group_magic = 0x06
+        self.position_preset_magic = 0x07
 
     def send_initialize(self):
         for input in self.controlled_inputs:
@@ -681,7 +748,7 @@ class LS9_mix:
             if input in self.channel_on and input not in channel_on:
                 self.midi_sender.send_input_off(input)
         if target_cue.console_cue is not None:
-            self.midi_sender.send_pc(target_cue.console_cue)
+            self.midi_sender.send_pc(target_cue.console_cue - 1)
         self.channel_on = channel_on
 
     def go_cue(self, target_cue_idx):
@@ -738,6 +805,7 @@ class LS9_mix:
         Input Alias
         Input Groups
         Cue Data
+        Position Preset
 
         Controlled Inputs:
         Length of the controlled inputs (1 byte)
@@ -770,6 +838,14 @@ class LS9_mix:
             For each member:
                 Member Number (1 byte)
         
+        Position Preset:
+        Count of the position presets (1 byte)
+        For each Preset:
+            Length of the preset name (2 bytes)
+            Preset Name (variable length)
+            Master Panning (1 byte)
+            Matrix 1-8+LR+C Send On/Off Bitset (2 bytes)
+
         Cue Data:
         Realization in the Mix_cue_sheet.to_binary()
         """
@@ -827,6 +903,31 @@ class LS9_mix:
         binary_data += input_group_len.to_bytes(4, 'big')
         binary_data += self.input_group_magic.to_bytes(1, 'big')
         binary_data += input_group_data
+
+        position_preset_data = b''
+        position_preset_data += len(self.cues.position_preset).to_bytes(1, 'big')
+        for preset in self.cues.position_preset:
+            name = preset['name']
+            pan = preset['pan']
+            matrix_send = preset['matrix_send']
+            lr_send = preset['lr_send']
+            C_send = preset['C_send']
+
+            sends = 0
+
+            for i in range(8):
+                sends += matrix_send[i] << i
+            sends += lr_send << 8
+            sends += C_send << 9
+
+            position_preset_data += len(name).to_bytes(2, 'big')
+            position_preset_data += name.encode('utf-8')
+            position_preset_data += pan.to_bytes(1, 'big')
+            position_preset_data += sends.to_bytes(2, 'big')
+        position_preset_len = len(position_preset_data) + 5
+        binary_data += position_preset_len.to_bytes(4, 'big')
+        binary_data += self.position_preset_magic.to_bytes(1, 'big')
+        binary_data += position_preset_data
 
         mutex.acquire()
         cue_data = self.cues.to_binary()
@@ -911,6 +1012,26 @@ class LS9_mix:
                         input_group[group].append(block_data[0])
                         block_data = block_data[1:]
                 self.input_groups = input_group
+            elif block_magic == self.position_preset_magic:
+                position_preset = []
+                position_preset_len = block_data[0]
+                block_data = block_data[1:]
+                for i in range(position_preset_len):
+                    name_len = int.from_bytes(block_data[0:2], 'big')
+                    block_data = block_data[2:]
+                    name = block_data[0:name_len].decode('utf-8')
+                    block_data = block_data[name_len:]
+                    pan = block_data[0]
+                    block_data = block_data[1:]
+                    sends = int.from_bytes(block_data[0:2], 'big')
+                    block_data = block_data[2:]
+                    matrix_send = []
+                    for i in range(8):
+                        matrix_send.append((sends >> i) & 1)
+                    lr_send = (sends >> 8) & 1
+                    C_send = (sends >> 9) & 1
+                    position_preset.append({'name': name, 'pan': pan, 'matrix_send': matrix_send, 'lr_send': lr_send, 'C_send': C_send})
+                self.cues.position_preset = position_preset
         
         mutex.acquire()
         self.controlled_inputs = controlled_inputs

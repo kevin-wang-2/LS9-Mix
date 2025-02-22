@@ -700,6 +700,90 @@ class UltilityWidget(QWidget):
         self.layout.addWidget(QSplitter(Qt.Orientation.Vertical))
         self.layout.addLayout(self.input_panel)
 
+
+class CurrentCueWidget(QWidget):
+    def __init__(self, mix):
+        super().__init__()
+        self.mix = mix
+        # Display the Number and the Title of the current cue at the left of first row, and display the next cue at the right-most
+        # Display the DCA assignments as big boxes at the second row
+        current_cue = self.mix.cues.get_cue(self.mix.current_cue)
+        next_cue = self.mix.cues.get_cue(self.mix.current_cue + 1) if self.mix.current_cue < len(self.mix.cues) - 1 else None
+        self.layout = QVBoxLayout()
+        self.setLayout(self.layout)
+        self.textlayout = QHBoxLayout()
+        self.layout.addLayout(self.textlayout)
+        self.current_cue_label = QLabel("Current Cue: " + current_cue.number + " - " + current_cue.name)
+        self.next_cue_label = QLabel("Next Cue: " + next_cue.number + " - " + next_cue.name) if next_cue is not None else QLabel("Next Cue: None")
+        self.textlayout.addWidget(self.current_cue_label)
+        self.textlayout.addWidget(self.next_cue_label)
+
+        # Display the DCA assignments
+        self.dca_layout = QHBoxLayout()
+        self.layout.addLayout(self.dca_layout)
+        self.dca_grid = []
+        for dca in self.mix.controlled_dca:
+            dca_text = ""
+            if current_cue.dca_name[dca] != "":
+                dca_text = current_cue.dca_name[dca]
+            elif len(current_cue.dca[dca]) == 1:
+                dca_text = self.mix.input_alias[current_cue.dca[dca][0]]
+            elif len(current_cue.dca[dca]) > 1:
+                dca_text = "Group"
+
+            dca_label = QLabel(dca_text)
+            # Set Color as the color in the main table
+            # If the DCA is exactly the same including effects, color it green
+            # If the effects are different, color it orange
+
+            if self.mix.current_cue < len(self.mix.cues) - 1:
+                if current_cue.dca[dca] == next_cue.dca[dca] and current_cue.dca[dca] != []:
+                    if current_cue.effects[dca] == next_cue.effects[dca]:
+                        dca_label.setStyleSheet("background-color: #00D000")
+                    else:
+                        dca_label.setStyleSheet("background-color: #FF7F00")
+
+            # Make the text huge and set some margin, set the width of the extbox to 5 times character width
+            dca_label.setFont(QFont("Arial", 50))
+            dca_label.setContentsMargins(10, 10, 10, 10)
+            dca_label.setFixedWidth(150)
+
+            # Make it left
+            dca_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            
+            self.dca_grid.append(dca_label)
+            self.dca_layout.addWidget(dca_label)
+        
+        self.mix.register_event_callback(self.ls9_message_callback)
+
+    def ls9_message_callback(self, cue_num):
+        current_cue = self.mix.cues.get_cue(self.mix.current_cue)
+        next_cue = self.mix.cues.get_cue(self.mix.current_cue + 1) if self.mix.current_cue < len(self.mix.cues) - 1 else None
+        self.current_cue_label.setText("Current Cue: " + current_cue.number + " - " + current_cue.name)
+        self.next_cue_label.setText("Next Cue: " + next_cue.number + " - " + next_cue.name) if next_cue is not None else QLabel("Next Cue: None")
+        for dca in self.mix.controlled_dca:
+            dca_text = ""
+            if current_cue.dca_name[dca] != "":
+                dca_text = current_cue.dca_name[dca]
+            elif len(current_cue.dca[dca]) == 1:
+                dca_text = self.mix.input_alias[current_cue.dca[dca][0]]
+            elif len(current_cue.dca[dca]) > 1:
+                dca_text = "Group"
+            self.dca_grid[dca - 1].setText(dca_text)
+            if self.mix.current_cue < len(self.mix.cues) - 1:
+                if current_cue.dca[dca] == next_cue.dca[dca] and current_cue.dca[dca] != []:
+                    if current_cue.effects[dca] == next_cue.effects[dca]:
+                        self.dca_grid[dca - 1].setStyleSheet("background-color: #00D000")
+                    else:
+                        self.dca_grid[dca - 1].setStyleSheet("background-color: #FF7F00")
+                else:
+                    self.dca_grid[dca - 1].setStyleSheet("background-color: #000000")
+            else:
+                self.dca_grid[dca - 1].setStyleSheet("background-color: #000000")
+        self.update()
+
+
+
 class SetupWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -889,6 +973,13 @@ class Ls9MixWidget(QWidget):
             dialog.exec()
         self.mix_group_setup_button.clicked.connect(mix_group_setup)
 
+        # CUE Window Button
+        self.cue_window_button = QPushButton("Current CUE")
+        def cue_window():
+            self.cue_window = CurrentCueWidget(self.server.mix)
+            self.cue_window.show()
+        self.cue_window_button.clicked.connect(cue_window)
+
         # Ultility Button
         self.ultility_button = QPushButton("Ultilities")
         def ultility():
@@ -917,6 +1008,7 @@ class Ls9MixWidget(QWidget):
         self.control_layout.addWidget(self.duplicate_button)
         self.control_layout.addWidget(self.delete_button)
         self.control_layout.addStretch()
+        self.control_layout.addWidget(self.cue_window_button)
         self.control_layout.addWidget(self.mix_group_setup_button)
         self.control_layout.addWidget(self.ultility_button)
         self.control_layout.addWidget(self.connect_button)
